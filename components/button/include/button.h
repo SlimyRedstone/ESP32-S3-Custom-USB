@@ -19,10 +19,14 @@ extern "C" {
 /**
  * @brief Fired once per debounced press, in task context.
  *
- * The signature matches usb_proto_send_event_cb(), so a button can be wired
+ * @param gpio  The pin that triggered, so one handler can serve several buttons.
+ * @param level The pin level sampled at the moment the press was confirmed.
+ * @param arg   The pointer handed to button_init(), untouched.
+ *
+ * The signature matches usb_proto_send_interrupt_cb(), so a button can be wired
  * straight to a USB event with no glue function.
  */
-typedef void (*button_cb_t)(void *arg);
+typedef void (*button_cb_t)(int gpio, int level, void *arg);
 
 typedef struct {
     int      gpio;

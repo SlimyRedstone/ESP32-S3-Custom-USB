@@ -33,6 +33,11 @@ PID = 0x4001
 
 TIMEOUT_MS = 1000
 
+# Read a whole transfer, not a single packet: {"config":...} and interrupt
+# reports are both larger than wMaxPacketSize. The device ends every transfer
+# with a short packet, which terminates the read.
+READ_SIZE = 512
+
 
 def find_vendor_interface(dev):
     """Return (interface_number, ep_out, ep_in) for the vendor-specific interface."""
@@ -95,7 +100,7 @@ def main():
         # Drain any queued heartbeat packets first.
         while True:
             try:
-                ep_in.read(ep_in.wMaxPacketSize, timeout=100)
+                ep_in.read(READ_SIZE, timeout=100)
             except usb.core.USBError:
                 break
 
@@ -104,7 +109,7 @@ def main():
             cmd = sys.argv[1].encode("ascii")
             print(f"-> {cmd!r}")
             ep_out.write(cmd, timeout=TIMEOUT_MS)
-            reply = bytes(ep_in.read(ep_in.wMaxPacketSize, timeout=TIMEOUT_MS))
+            reply = bytes(ep_in.read(READ_SIZE, timeout=TIMEOUT_MS))
             print(f"<- {reply!r}  ({reply.hex()})")
             return 0
 
@@ -113,7 +118,7 @@ def main():
         print(f"-> {payload.hex()}")
         ep_out.write(payload, timeout=TIMEOUT_MS)
 
-        reply = bytes(ep_in.read(ep_in.wMaxPacketSize, timeout=TIMEOUT_MS))
+        reply = bytes(ep_in.read(READ_SIZE, timeout=TIMEOUT_MS))
         print(f"<- {reply.hex()}")
         assert reply[0] == 0xA5, f"unexpected tag 0x{reply[0]:02X}"
         assert reply[1:] == payload, "echo payload mismatch"
@@ -125,7 +130,7 @@ def main():
         # while time.time() < deadline:
         while True:
             try:
-                pkt = bytes(ep_in.read(ep_in.wMaxPacketSize, timeout=1500))
+                pkt = bytes(ep_in.read(READ_SIZE, timeout=1500))
             except usb.core.USBError:
                 continue
             if not pkt:
@@ -134,9 +139,15 @@ def main():
                 count = int.from_bytes(pkt[1:5], "little")
                 print(f"heartbeat {count}")
             else:
-                # Replies are JSON; async events are plain text ("Button Triggered").
                 text = pkt.decode("ascii", "replace")
-                print(f"{'reply' if text.startswith('{') else 'event'}: {text}")
+                # An interrupt report is unprompted, so it is not a reply.
+                if text.startswith('{"interrupt"'):
+                    kind = "interrupt"
+                elif text.startswith("{"):
+                    kind = "reply"
+                else:
+                    kind = "event"
+                print(f"{kind}: {text}")
     finally:
         usb.util.release_interface(dev, itf_num)
         usb.util.dispose_resources(dev)

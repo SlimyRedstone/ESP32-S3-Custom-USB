@@ -1,10 +1,11 @@
 /*
  * Decoding for what the device sends on the vendor IN endpoint.
  *
- * Three kinds of traffic share the endpoint:
+ * Four kinds of traffic share the endpoint:
  *   0x5A + uint32 LE   heartbeat counter, once per second while idle
+ *   {"interrupt":...}  an unprompted GPIO interrupt report
  *   {...}              a JSON reply to a command
- *   plain text         an asynchronous event, e.g. "Button Triggered"
+ *   plain text         any other asynchronous event
  */
 
 #ifndef PROTO_H
@@ -17,6 +18,7 @@
 
 typedef enum {
     PROTO_HEARTBEAT,
+    PROTO_INTERRUPT,   /*!< unprompted, so never a reply to a command */
     PROTO_REPLY,
     PROTO_EVENT,
 } proto_kind_t;

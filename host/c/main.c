@@ -57,9 +57,9 @@ static void on_interrupt(int sig)
 /*
  * Send one command and print the reply.
  *
- * Heartbeats arriving in the gap between the write and the read are skipped;
- * without that the heartbeat gets reported as the reply and the real one is
- * left queued for the next run.
+ * Heartbeats and interrupt reports arriving in the gap between the write and
+ * the read are skipped; without that one of them gets reported as the reply and
+ * the real one is left queued for the next run.
  */
 static int run_one_shot(usbdev_t *dev, const char *cmd)
 {
@@ -78,7 +78,13 @@ static int run_one_shot(usbdev_t *dev, const char *cmd)
             fprintf(stderr, "IN failed: %s\n", libusb_error_name(rc));
             return 1;
         }
-        if (len < 1 || proto_classify(buf, len) == PROTO_HEARTBEAT) {
+        /* Heartbeats and interrupt reports are unprompted, so neither is the
+           reply we are waiting for. */
+        proto_kind_t kind = proto_classify(buf, len);
+        if (len < 1 || kind == PROTO_HEARTBEAT || kind == PROTO_INTERRUPT) {
+            if (kind == PROTO_INTERRUPT) {
+                proto_print(buf, len);   /* still worth showing */
+            }
             continue;
         }
 

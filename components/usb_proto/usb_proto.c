@@ -35,10 +35,21 @@ static const char *TAG = "usb_proto";
 /* Replies are built here; {"config":{...}} is the largest of them. */
 #define REPLY_BUF_MAX           320
 
+/* One inbound bulk packet. */
 typedef struct {
     uint16_t len;
     uint8_t  data[USB_PROTO_EP_SIZE];
 } usb_packet_t;
+
+/*
+ * Outbound asynchronous events. Larger than a packet because an interrupt
+ * report carrying a message exceeds 64 bytes; the transport splits it across
+ * packets on the way out.
+ */
+typedef struct {
+    uint16_t len;
+    uint8_t  data[USB_PROTO_EVENT_MAX];
+} usb_event_t;
 
 /* How long the receive colour stays on before reverting to the idle colour. */
 #define RECEIVE_FLASH_MS        120
@@ -112,14 +123,14 @@ esp_err_t usb_proto_send_event(const void *data, size_t len)
     if (data == NULL || len == 0) {
         return ESP_ERR_INVALID_ARG;
     }
-    if (len > USB_PROTO_EP_SIZE) {
+    if (len > USB_PROTO_EVENT_MAX) {
         return ESP_ERR_INVALID_SIZE;
     }
     if (s_event_queue == NULL) {
         return ESP_ERR_INVALID_STATE;
     }
 
-    usb_packet_t evt;
+    usb_event_t evt;
     evt.len = (uint16_t)len;
     memcpy(evt.data, data, len);
 
@@ -130,12 +141,33 @@ esp_err_t usb_proto_send_event(const void *data, size_t len)
     return ESP_OK;
 }
 
-void usb_proto_send_event_cb(void *text)
+void usb_proto_send_interrupt_cb(int gpio, int level, void *message)
 {
+    cJSON *root = cJSON_CreateObject();
+    if (root == NULL) {
+        return;
+    }
+
+    cJSON *interrupt = cJSON_AddObjectToObject(root, "interrupt");
+    if (interrupt == NULL) {
+        cJSON_Delete(root);
+        return;
+    }
+
+    cJSON_AddNumberToObject(interrupt, "gpio", gpio);
+    cJSON_AddNumberToObject(interrupt, "state", level);
+    /* cJSON escapes the string, so an arbitrary message stays valid JSON. */
+    cJSON_AddStringToObject(interrupt, "message",
+                            message ? (const char *)message : "");
+
+    char *text = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
     if (text == NULL) {
         return;
     }
-    usb_proto_send_event(text, strlen((const char *)text));
+
+    usb_proto_send_event(text, strlen(text));
+    cJSON_free(text);
 }
 
 /*
@@ -509,10 +541,11 @@ static void dispatch_task(void *arg)
             apply_led(s_idle_color);
         }
 
-        while (xQueueReceive(s_event_queue, &pkt, 0) == pdTRUE) {
+        usb_event_t evt;
+        while (xQueueReceive(s_event_queue, &evt, 0) == pdTRUE) {
             if (tud_vendor_mounted()) {
-                usb_proto_vendor_send(pkt.data, pkt.len);
-                ESP_LOGI(TAG, "event: %.*s", (int)pkt.len, (const char *)pkt.data);
+                usb_proto_vendor_send(evt.data, evt.len);
+                ESP_LOGI(TAG, "event: %.*s", (int)evt.len, (const char *)evt.data);
             }
         }
 
@@ -572,7 +605,7 @@ esp_err_t usb_proto_start(const usb_proto_config_t *config)
         return ESP_ERR_NO_MEM;
     }
 
-    s_event_queue = xQueueCreate(EVENT_QUEUE_DEPTH, sizeof(usb_packet_t));
+    s_event_queue = xQueueCreate(EVENT_QUEUE_DEPTH, sizeof(usb_event_t));
     if (s_event_queue == NULL) {
         vQueueDelete(s_rx_queue);
         s_rx_queue = NULL;

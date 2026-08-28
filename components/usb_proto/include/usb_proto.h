@@ -26,7 +26,9 @@
  * Wire protocol, device -> host, outside of replies:
  *   0x5A followed by a little-endian uint32 counter, once per second while idle
  *                  (when heartbeat is enabled).
- *   plain text     asynchronous events queued with usb_proto_send_event().
+ *   {"interrupt":{"gpio":0,"state":0,"message":"..."}}
+ *                  a GPIO interrupt report, sent unprompted
+ *   anything else  asynchronous events queued with usb_proto_send_event().
  *
  * Target: ESP32-S3 full-speed USB-OTG, esp_tinyusb 2.x on ESP-IDF v6.0.
  */
@@ -146,28 +148,38 @@ bool usb_proto_vendor_mounted(void);
  */
 esp_err_t usb_proto_vendor_send(const uint8_t *data, size_t len);
 
+/** Largest asynchronous event payload, in bytes. */
+#define USB_PROTO_EVENT_MAX 192
+
 /**
  * @brief Queue bytes to be sent on the vendor IN endpoint by the dispatch task.
  *
  * Safe to call from any task, unlike usb_proto_vendor_send(), because the
  * actual write still happens on the single writer. Returns ESP_ERR_NO_MEM if
- * the outbound queue is full, or ESP_ERR_INVALID_SIZE if @p len exceeds one
- * packet. Not callable from an ISR.
+ * the outbound queue is full, or ESP_ERR_INVALID_SIZE if @p len exceeds
+ * USB_PROTO_EVENT_MAX. Not callable from an ISR.
  */
 esp_err_t usb_proto_send_event(const void *data, size_t len);
 
 /**
- * @brief usb_proto_send_event() shaped as a callback.
+ * @brief Report a GPIO interrupt to the host.
  *
- * @param text NUL-terminated string, sent as-is. Must outlive the call, so use
- *             a string literal or other static storage.
+ * Queues one JSON object:
+ * @code
+ * {"interrupt":{"gpio":0,"state":0,"message":"Button Triggered"}}
+ * @endcode
+ *
+ * @param gpio    Pin that triggered.
+ * @param level   Pin level at the moment it triggered.
+ * @param message NUL-terminated string placed in the "message" field, or NULL
+ *                for an empty one. Escaped on the way out, so any text is safe.
  *
  * Matches button_cb_t, so a button can be wired directly to a USB event:
  * @code
- * button_init(&cfg, usb_proto_send_event_cb, "Button Triggered");
+ * button_init(&cfg, usb_proto_send_interrupt_cb, "Button Triggered");
  * @endcode
  */
-void usb_proto_send_event_cb(void *text);
+void usb_proto_send_interrupt_cb(int gpio, int level, void *message);
 
 /**
  * @brief Write text to the CDC serial port.

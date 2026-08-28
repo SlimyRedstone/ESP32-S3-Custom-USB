@@ -35,7 +35,7 @@ bounded by its 512-byte JSON buffer rather than by the endpoint size.
 - `{"ok":true}` / `{"ok":false,"error":"..."}` replies to every `set`
 - `{"led":"ABCDEF"}` from a get — the wheel snaps to the reported colour
 - `{"config":{...}}` from a get — fills the config editor
-- `Button Triggered` when GPIO0 is pressed, still plain text
+- `{"interrupt":{"gpio":0,"state":0,"message":"..."}}` when GPIO0 is pressed
 - Heartbeat counters, hidden by default — tick **Show heartbeats**
 
 ## Notes

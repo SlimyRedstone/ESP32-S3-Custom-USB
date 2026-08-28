@@ -370,6 +370,13 @@ function handleReply(obj, raw) {
     return;
   }
 
+  /* {"interrupt":{...}} -- unprompted GPIO report, not a reply to anything. */
+  if (obj.interrupt && typeof obj.interrupt === 'object') {
+    const i = obj.interrupt;
+    log('ev', `<- interrupt gpio=${i.gpio} state=${i.state} "${i.message ?? ''}"`);
+    return;
+  }
+
   /* {"config":{...}} -- fill the editor with what the device actually holds. */
   if (obj.config && typeof obj.config === 'object') {
     log('rx', `<- config ${JSON.stringify(obj.config)}`);

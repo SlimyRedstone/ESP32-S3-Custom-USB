@@ -1,13 +1,21 @@
 #include "proto.h"
 
 #include <stdio.h>
+#include <string.h>
 
 #define HEARTBEAT_LEN 5
+#define INTERRUPT_PREFIX "{\"interrupt\""
 
 proto_kind_t proto_classify(const unsigned char *data, int len)
 {
     if (len >= HEARTBEAT_LEN && data[0] == PROTO_HEARTBEAT_TAG) {
         return PROTO_HEARTBEAT;
+    }
+    /* The firmware emits "interrupt" as the first key, so the prefix is enough
+       to tell an unprompted report from a reply without parsing JSON. */
+    if (len >= (int)sizeof(INTERRUPT_PREFIX) - 1 &&
+        memcmp(data, INTERRUPT_PREFIX, sizeof(INTERRUPT_PREFIX) - 1) == 0) {
+        return PROTO_INTERRUPT;
     }
     if (len >= 1 && data[0] == '{') {
         return PROTO_REPLY;

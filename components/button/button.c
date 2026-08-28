@@ -51,7 +51,9 @@ static void button_task(void *arg)
         }
 
         if (s_cb) {
-            s_cb(s_arg);
+            /* Sample the pin now rather than assuming the active level, so the
+               callback reports what the hardware actually reads. */
+            s_cb(s_cfg.gpio, gpio_get_level(s_cfg.gpio), s_arg);
         }
 
         while (s_running && level_is_active()) {
