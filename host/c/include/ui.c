@@ -1,0 +1,857 @@
+#include "ui.h"
+
+#include <math.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "tray.h"
+
+#include "clay.h"
+#include "clay_raylib_renderer.h"
+#include "raylib.h"
+
+/* --------------------------------------------------------------- theme --- */
+/* Mirrors the dark palette in host/web/style.css. */
+
+#define COL(r, g, b, a) ((Clay_Color){ (float)(r), (float)(g), (float)(b), (float)(a) })
+
+static const Clay_Color C_BG        = COL(0x14, 0x16, 0x1a, 255);
+static const Clay_Color C_CARD      = COL(0x1c, 0x1f, 0x25, 255);
+static const Clay_Color C_FIELD     = COL(0x14, 0x16, 0x1a, 255);
+static const Clay_Color C_LINE      = COL(0x2b, 0x30, 0x39, 255);
+static const Clay_Color C_FG        = COL(0xe7, 0xe9, 0xee, 255);
+static const Clay_Color C_MUTED     = COL(0x9a, 0xa1, 0xb1, 255);
+static const Clay_Color C_ACCENT    = COL(0x5b, 0x8c, 0xff, 255);
+static const Clay_Color C_ACCENT_HI = COL(0x7a, 0xa4, 0xff, 255);
+static const Clay_Color C_OK        = COL(0x4e, 0xcb, 0x84, 255);
+static const Clay_Color C_WARN      = COL(0xe8, 0xa3, 0x4a, 255);
+static const Clay_Color C_RX        = COL(0xc7, 0x9b, 0xff, 255);
+static const Clay_Color C_TRANSPARENT = COL(0, 0, 0, 0);
+
+enum { FONT_BODY = 0, FONT_MONO = 1, FONT_COUNT = 2 };
+
+#define UI_PI        3.14159265358979323846f
+#define WHEEL_PIXELS 200        /* texture resolution of the colour wheel */
+#define LOG_ROW_H    16
+
+static Font s_fonts[FONT_COUNT];
+
+/* Colour wheel texture, regenerated only when brightness changes. */
+static Texture2D s_wheel;
+static float     s_wheel_val = -1.0f;
+
+/* Which text field has keyboard focus, or NULL. */
+static char *s_focus;
+static size_t s_focus_cap;
+
+/*
+ * Clay stores a pointer to text, not a copy, and only reads it when the frame
+ * is rendered. Each field therefore needs storage that stays untouched for the
+ * rest of the frame; one shared buffer made every field show the same string.
+ */
+#define TEXT_SLOTS 4
+static char s_text_slots[TEXT_SLOTS][APP_CONFIG_MAX + 2];
+static int  s_text_slot;
+
+/* --------------------------------------------------------------- helpers -- */
+
+/* Clay_String over a runtime buffer. CLAY_STRING only accepts literals. */
+static Clay_String dyn(const char *text)
+{
+    Clay_String s;
+    s.isStaticallyAllocated = false;
+    s.length = (int32_t)strlen(text);
+    s.chars = text;
+    return s;
+}
+
+static void HandleClayErrors(Clay_ErrorData errorData)
+{
+    fprintf(stderr, "clay: %.*s\n", (int)errorData.errorText.length,
+            errorData.errorText.chars);
+}
+
+static Clay_Color mix(Clay_Color base, Clay_Color hi, bool on)
+{
+    return on ? hi : base;
+}
+
+/* ------------------------------------------------------------- widgets --- */
+
+/*
+ * Clay reports hover for the element being declared, so a click is "hovered
+ * while the mouse was released this frame".
+ */
+static bool clicked(bool enabled)
+{
+    return enabled && Clay_Hovered() && IsMouseButtonReleased(MOUSE_BUTTON_LEFT);
+}
+
+static bool ui_button(Clay_ElementId id, const char *label, bool primary,
+                      bool enabled, bool grow)
+{
+    bool hit = false;
+
+    Clay_Color fill = primary ? C_ACCENT : C_CARD;
+    Clay_Color text = primary ? C_FG : C_FG;
+    if (!enabled) {
+        fill = C_LINE;
+        text = C_MUTED;
+    }
+
+    CLAY(id, {
+        .layout = {
+            .sizing = { .width = grow ? CLAY_SIZING_GROW(0) : CLAY_SIZING_FIT(0),
+                        .height = CLAY_SIZING_FIXED(30) },
+            .padding = { 12, 12, 7, 7 },
+            .childAlignment = { CLAY_ALIGN_X_CENTER, CLAY_ALIGN_Y_CENTER },
+        },
+        .backgroundColor = mix(fill, primary ? C_ACCENT_HI : C_LINE,
+                               enabled && Clay_Hovered()),
+        .cornerRadius = CLAY_CORNER_RADIUS(8),
+        .border = { .color = C_LINE, .width = { 1, 1, 1, 1 } },
+    }) {
+        hit = clicked(enabled);
+        CLAY_TEXT(dyn(label), CLAY_TEXT_CONFIG({
+            .fontId = FONT_BODY, .fontSize = 15, .textColor = text }));
+    }
+    return hit;
+}
+
+static bool ui_checkbox(Clay_ElementId id, const char *label, bool *value)
+{
+    bool hit = false;
+
+    CLAY(id, {
+        .layout = {
+            .sizing = { .height = CLAY_SIZING_FIXED(22) },
+            .childGap = 8,
+            .childAlignment = { .y = CLAY_ALIGN_Y_CENTER },
+        },
+    }) {
+        hit = clicked(true);
+
+        CLAY_AUTO_ID({
+            .layout = { .sizing = { CLAY_SIZING_FIXED(14), CLAY_SIZING_FIXED(14) } },
+            .backgroundColor = *value ? C_ACCENT : C_FIELD,
+            .cornerRadius = CLAY_CORNER_RADIUS(4),
+            .border = { .color = C_LINE, .width = { 1, 1, 1, 1 } },
+        }) {}
+
+        CLAY_TEXT(dyn(label), CLAY_TEXT_CONFIG({
+            .fontId = FONT_BODY, .fontSize = 13, .textColor = C_MUTED }));
+    }
+
+    if (hit) {
+        *value = !*value;
+    }
+    return hit;
+}
+
+/*
+ * Text field. Clay only lays it out; the caret and editing are handled here
+ * against the focused buffer.
+ */
+static void ui_text_field(Clay_ElementId id, char *buffer, size_t cap,
+                          int font, bool *submitted)
+{
+    bool focused = (s_focus == buffer);
+
+    CLAY(id, {
+        .layout = {
+            .sizing = { .width = CLAY_SIZING_GROW(0), .height = CLAY_SIZING_FIXED(30) },
+            .padding = { 10, 10, 6, 6 },
+            .childAlignment = { .y = CLAY_ALIGN_Y_CENTER },
+        },
+        .backgroundColor = C_FIELD,
+        .cornerRadius = CLAY_CORNER_RADIUS(8),
+        .border = { .color = focused ? C_ACCENT : C_LINE, .width = { 1, 1, 1, 1 } },
+    }) {
+        if (Clay_Hovered() && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+            s_focus = buffer;
+            s_focus_cap = cap;
+        }
+
+        /* Show a caret only while focused, without disturbing the buffer. */
+        char *shown = s_text_slots[s_text_slot % TEXT_SLOTS];
+        s_text_slot++;
+        snprintf(shown, APP_CONFIG_MAX + 2, "%s%s", buffer,
+                 (focused && fmodf((float)GetTime(), 1.0f) < 0.5f) ? "_" : "");
+
+        CLAY_TEXT(dyn(shown), CLAY_TEXT_CONFIG({
+            .fontId = font, .fontSize = 14,
+            .textColor = buffer[0] ? C_FG : C_MUTED }));
+    }
+
+    if (submitted) {
+        *submitted = focused && IsKeyPressed(KEY_ENTER);
+    }
+}
+
+/* Feed raylib keyboard input into whichever field has focus. */
+static void ui_pump_text_input(void)
+{
+    if (s_focus == NULL) {
+        return;
+    }
+
+    size_t len = strlen(s_focus);
+
+    for (int c = GetCharPressed(); c > 0; c = GetCharPressed()) {
+        if (c >= 32 && c < 127 && len + 1 < s_focus_cap) {
+            s_focus[len++] = (char)c;
+            s_focus[len] = '\0';
+        }
+    }
+
+    /* Repeat on hold, so deleting a long value is not one press per character. */
+    if ((IsKeyPressed(KEY_BACKSPACE) || IsKeyPressedRepeat(KEY_BACKSPACE)) && len > 0) {
+        s_focus[len - 1] = '\0';
+    }
+    if (IsKeyPressed(KEY_ESCAPE)) {
+        s_focus = NULL;
+    }
+}
+
+/* --------------------------------------------------------- colour wheel -- */
+
+/* HSV disc: hue around the circumference, saturation along the radius. */
+static void ui_rebuild_wheel(const app_t *app)
+{
+    if (fabsf(app->val - s_wheel_val) < 0.004f && s_wheel.id != 0) {
+        return;
+    }
+    s_wheel_val = app->val;
+
+    Image img = GenImageColor(WHEEL_PIXELS, WHEEL_PIXELS, BLANK);
+    Color *px = (Color *)img.data;
+
+    const float centre = WHEEL_PIXELS / 2.0f;
+    const float radius = centre - 1.0f;
+
+    for (int y = 0; y < WHEEL_PIXELS; y++) {
+        for (int x = 0; x < WHEEL_PIXELS; x++) {
+            float dx = (float)x - centre;
+            float dy = (float)y - centre;
+            float dist = sqrtf(dx * dx + dy * dy);
+            Color *p = &px[y * WHEEL_PIXELS + x];
+
+            if (dist > radius) {
+                *p = BLANK;
+                continue;
+            }
+
+            float angle = atan2f(dy, dx) * 180.0f / UI_PI + 90.0f;
+            if (angle < 0.0f) {
+                angle += 360.0f;
+            }
+
+            uint8_t r, g, b;
+            app_hsv_to_rgb(angle, fminf(dist / radius, 1.0f), app->val, &r, &g, &b);
+
+            p->r = r;
+            p->g = g;
+            p->b = b;
+            /* Feather the rim so the edge is not jagged. */
+            p->a = (dist > radius - 1.0f)
+                 ? (unsigned char)((radius - dist) * 255.0f)
+                 : 255;
+        }
+    }
+
+    if (s_wheel.id != 0) {
+        UnloadTexture(s_wheel);
+    }
+    s_wheel = LoadTextureFromImage(img);
+    UnloadImage(img);
+}
+
+/*
+ * Hit-test and marker are done outside Clay: the layout supplies the box, the
+ * pointer maths happens here.
+ */
+static void ui_wheel_interact(app_t *app, Clay_BoundingBox box, bool *changed)
+{
+    if (!IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
+        return;
+    }
+
+    Vector2 m = GetMousePosition();
+    float cx = box.x + box.width / 2.0f;
+    float cy = box.y + box.height / 2.0f;
+    float radius = fminf(box.width, box.height) / 2.0f;
+
+    float dx = m.x - cx;
+    float dy = m.y - cy;
+    float dist = sqrtf(dx * dx + dy * dy);
+
+    /* Only start a drag inside the disc, but let it continue outside. */
+    if (dist > radius && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+        return;
+    }
+    if (dist > radius * 1.6f) {
+        return;
+    }
+
+    float angle = atan2f(dy, dx) * 180.0f / UI_PI + 90.0f;
+    if (angle < 0.0f) {
+        angle += 360.0f;
+    }
+
+    app->hue = angle;
+    app->sat = fminf(dist / radius, 1.0f);
+    app_sync_hex(app);
+    *changed = true;
+}
+
+static void ui_draw_wheel_marker(const app_t *app, Clay_BoundingBox box)
+{
+    float cx = box.x + box.width / 2.0f;
+    float cy = box.y + box.height / 2.0f;
+    float radius = fminf(box.width, box.height) / 2.0f;
+    float angle = (app->hue - 90.0f) * UI_PI / 180.0f;
+
+    Vector2 at = { cx + app->sat * radius * cosf(angle),
+                   cy + app->sat * radius * sinf(angle) };
+
+    DrawCircleV(at, 7.0f, WHITE);
+    DrawCircleV(at, 5.0f, (Color){ 0, 0, 0, 160 });
+
+    uint8_t r, g, b;
+    app_hsv_to_rgb(app->hue, app->sat, app->val, &r, &g, &b);
+    DrawCircleV(at, 4.0f, (Color){ r, g, b, 255 });
+}
+
+/* -------------------------------------------------------------- slider --- */
+
+/*
+ * Interaction only. The element is declared inside the layout; this reads the
+ * box Clay recorded last frame, so it must run before Clay_BeginLayout().
+ */
+static bool ui_slider(Clay_ElementId id, float *value)
+{
+    Clay_ElementData data = Clay_GetElementData(id);
+    if (!data.found || !IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
+        return false;
+    }
+
+    Vector2 m = GetMousePosition();
+    Clay_BoundingBox b = data.boundingBox;
+
+    bool inside = m.x >= b.x - 6.0f && m.x <= b.x + b.width + 6.0f &&
+                  m.y >= b.y - 8.0f && m.y <= b.y + b.height + 8.0f;
+    if (!inside) {
+        return false;
+    }
+
+    float t = (m.x - b.x) / (b.width > 1.0f ? b.width : 1.0f);
+    t = fmaxf(0.0f, fminf(1.0f, t));
+
+    if (fabsf(t - *value) <= 0.001f) {
+        return false;
+    }
+    *value = t;
+    return true;
+}
+
+static void ui_draw_slider_knob(Clay_ElementId id, float value)
+{
+    Clay_ElementData data = Clay_GetElementData(id);
+    if (!data.found) {
+        return;
+    }
+
+    Clay_BoundingBox b = data.boundingBox;
+    float x = b.x + value * b.width;
+    float y = b.y + b.height / 2.0f;
+
+    DrawRectangleRounded((Rectangle){ b.x, y - 2.5f, value * b.width, 5.0f },
+                         1.0f, 4, (Color){ 0x5b, 0x8c, 0xff, 255 });
+    DrawCircle((int)x, (int)y, 7.0f, WHITE);
+}
+
+/* ---------------------------------------------------------------- cards -- */
+
+static void ui_card_title(const char *title)
+{
+    CLAY_AUTO_ID({ .layout = { .padding = { 0, 0, 0, 8 } } }) {
+        CLAY_TEXT(dyn(title), CLAY_TEXT_CONFIG({
+            .fontId = FONT_BODY, .fontSize = 13, .textColor = C_MUTED }));
+    }
+}
+
+#define UI_CARD(id) CLAY(id, {                                              \
+        .layout = {                                                          \
+            .sizing = { CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0) },           \
+            .padding = CLAY_PADDING_ALL(14),                                 \
+            .childGap = 8,                                                   \
+            .layoutDirection = CLAY_TOP_TO_BOTTOM,                           \
+        },                                                                   \
+        .backgroundColor = C_CARD,                                           \
+        .cornerRadius = CLAY_CORNER_RADIUS(12),                              \
+        .border = { .color = C_LINE, .width = { 1, 1, 1, 1 } },              \
+    })
+
+static Clay_Color log_colour(app_log_kind_t kind)
+{
+    switch (kind) {
+    case APP_LOG_TX:    return C_ACCENT;
+    case APP_LOG_RX:    return C_RX;
+    case APP_LOG_EVENT: return C_OK;
+    case APP_LOG_ERROR:
+    default:            return C_WARN;
+    }
+}
+
+/* --------------------------------------------------------- notification -- */
+
+#define TOAST_SECONDS   4.0
+#define TOAST_FADE      0.8
+
+static unsigned long s_toast_seen;
+static double        s_toast_until;
+
+/*
+ * Drawn with raylib rather than Clay: it floats above the finished layout and
+ * fades, neither of which the layout pass is involved in.
+ */
+static void ui_draw_toast(const app_t *app)
+{
+    if (GetTime() >= s_toast_until || app->notice[0] == '\0') {
+        return;
+    }
+
+    double remaining = s_toast_until - GetTime();
+    float alpha = (remaining < TOAST_FADE) ? (float)(remaining / TOAST_FADE) : 1.0f;
+
+    Font font = s_fonts[FONT_BODY];
+    const char *title = "Interrupt";
+    Vector2 title_size = MeasureTextEx(font, title, 14.0f, 0.0f);
+    Vector2 text_size = MeasureTextEx(font, app->notice, 17.0f, 0.0f);
+
+    float width = fmaxf(title_size.x, text_size.x) + 28.0f;
+    float height = 58.0f;
+    float x = (float)GetScreenWidth() - width - 18.0f;
+    float y = (float)GetScreenHeight() - height - 18.0f;
+
+    Rectangle box = { x, y, width, height };
+
+    DrawRectangleRounded(box, 0.18f, 8, Fade((Color){ 0x1c, 0x1f, 0x25, 255 }, alpha));
+    DrawRectangleRoundedLines(box, 0.18f, 8, 1.0f,
+                              Fade((Color){ 0x5b, 0x8c, 0xff, 255 }, alpha));
+
+    DrawTextEx(font, title, (Vector2){ x + 14.0f, y + 9.0f }, 14.0f, 0.0f,
+               Fade((Color){ 0x9a, 0xa1, 0xb1, 255 }, alpha));
+    DrawTextEx(font, app->notice, (Vector2){ x + 14.0f, y + 29.0f }, 17.0f, 0.0f,
+               Fade((Color){ 0xe7, 0xe9, 0xee, 255 }, alpha));
+}
+
+/*
+ * Keep the newest line in view, but stop doing so once the user scrolls up, so
+ * reading back through the traffic is not fought by every arriving packet.
+ * Scrolling back to the bottom re-arms it.
+ */
+static void ui_autoscroll_log(const app_t *app, Clay_ElementId id)
+{
+    static unsigned long seen_seq = 0;
+    static bool stick = true;
+
+    Clay_ScrollContainerData sc = Clay_GetScrollContainerData(id);
+    if (!sc.found || sc.scrollPosition == NULL) {
+        return;
+    }
+
+    float overflow = sc.contentDimensions.height - sc.scrollContainerDimensions.height;
+    if (overflow < 0.0f) {
+        overflow = 0.0f;
+    }
+
+    /* Clay scrolls with a negative offset, so the bottom sits at -overflow. */
+    bool at_bottom = (-sc.scrollPosition->y) >= overflow - 4.0f;
+
+    if (app->log_seq != seen_seq) {
+        seen_seq = app->log_seq;
+        if (stick) {
+            sc.scrollPosition->y = -overflow;
+            return;     /* just moved it; judge the position again next frame */
+        }
+    }
+
+    stick = at_bottom;
+}
+
+/* ----------------------------------------------------------------- run --- */
+
+int ui_run(app_t *app)
+{
+    uint64_t memorySize = Clay_MinMemorySize();
+    void *memory = malloc(memorySize);
+    if (memory == NULL) {
+        fprintf(stderr, "out of memory setting up the interface\n");
+        return 1;
+    }
+
+    Clay_Arena arena = Clay_CreateArenaWithCapacityAndMemory(memorySize, memory);
+    Clay_Initialize(arena,
+                    (Clay_Dimensions){ UI_WINDOW_WIDTH, UI_WINDOW_HEIGHT },
+                    (Clay_ErrorHandler){ HandleClayErrors, NULL });
+
+    Clay_Raylib_Initialize(UI_WINDOW_WIDTH, UI_WINDOW_HEIGHT,
+                           "Custom USB Protocol",
+                           FLAG_VSYNC_HINT | FLAG_WINDOW_RESIZABLE | FLAG_MSAA_4X_HINT);
+
+    /* The layout stops being readable below its design size, so make that the
+       floor rather than letting the cards collapse. */
+    SetWindowMinSize(UI_WINDOW_WIDTH, UI_WINDOW_HEIGHT);
+
+    /*
+     * Follow the monitor, but never drop below UI_MIN_FPS. Vsync cannot exceed
+     * the refresh rate, so on a slower panel it has to be turned off for the
+     * higher target to have any effect.
+     */
+    int refresh_hz = GetMonitorRefreshRate(GetCurrentMonitor());
+    if (refresh_hz <= 0) {
+        refresh_hz = 60;        /* driver did not report one */
+    }
+
+    int target_fps = (refresh_hz >= UI_MIN_FPS) ? refresh_hz : UI_MIN_FPS;
+    if (target_fps > refresh_hz) {
+        ClearWindowState(FLAG_VSYNC_HINT);
+    }
+    SetTargetFPS(target_fps);
+
+    /* Owns the window icon as well as the tray, because both go through the
+       platform shell rather than raylib. */
+    tray_init(GetWindowHandle(), "resources/icon.ico", "Custom USB Protocol");
+
+    /* Roboto if it is beside the executable, raylib's built-in font otherwise. */
+    s_fonts[FONT_BODY] = LoadFontEx("resources/Roboto-Regular.ttf", 32, NULL, 0);
+    s_fonts[FONT_MONO] = LoadFontEx("resources/RobotoMono-Medium.ttf", 32, NULL, 0);
+    for (int i = 0; i < FONT_COUNT; i++) {
+        if (!s_fonts[i].glyphs) {
+            s_fonts[i] = GetFontDefault();
+        } else {
+            SetTextureFilter(s_fonts[i].texture, TEXTURE_FILTER_BILINEAR);
+        }
+    }
+
+    Clay_SetMeasureTextFunction(Raylib_MeasureText, s_fonts);
+    Clay_Raylib_SetFonts(s_fonts, FONT_COUNT);
+
+    Clay_ElementId wheel_id  = CLAY_ID("ColourWheel");
+    Clay_ElementId slider_id = CLAY_ID("Brightness");
+
+    double last_live_send = 0.0;
+
+    bool quit = false;
+
+    while (!WindowShouldClose() && !quit) {
+        /* Drain the tray's own message queue and honour its Exit entry. */
+        quit = tray_poll();
+
+        /* Minimising sends the window to the tray instead of the taskbar. */
+        if (tray_available() && !tray_is_minimized() && IsWindowMinimized()) {
+            tray_minimize();
+        }
+
+        /* Hidden: no window to draw into, so idle instead of spinning. */
+        if (tray_is_minimized()) {
+            app_poll(app);
+            if (app->notice_seq != s_toast_seen) {
+                s_toast_seen = app->notice_seq;
+                tray_notify("Interrupt", app->notice);
+            }
+            /* Nothing is drawn while hidden, and EndDrawing() is what normally
+               pumps input, so drain the queue explicitly. */
+            PollInputEvents();
+            WaitTime(0.05);
+            continue;
+        }
+
+        app_poll(app);
+
+        if (app->notice_seq != s_toast_seen) {
+            s_toast_seen = app->notice_seq;
+            s_toast_until = GetTime() + TOAST_SECONDS;
+            /* Hidden in the tray there is no window to draw the toast on, so
+               hand it to the shell instead. */
+            tray_notify("Interrupt", app->notice);
+        }
+
+        ui_pump_text_input();
+        ui_rebuild_wheel(app);
+
+        Clay_SetLayoutDimensions((Clay_Dimensions){
+            (float)GetScreenWidth(), (float)GetScreenHeight() });
+
+        Vector2 mouse = GetMousePosition();
+        Clay_SetPointerState((Clay_Vector2){ mouse.x, mouse.y },
+                             IsMouseButtonDown(MOUSE_BUTTON_LEFT));
+        Clay_UpdateScrollContainers(true,
+                                    (Clay_Vector2){ 0, GetMouseWheelMove() * 32 },
+                                    GetFrameTime());
+
+        /* Interaction against the previous frame's boxes, before laying out
+           the next one. */
+        bool colour_changed = false;
+        Clay_ElementData wheel_data = Clay_GetElementData(wheel_id);
+        if (wheel_data.found) {
+            ui_wheel_interact(app, wheel_data.boundingBox, &colour_changed);
+        }
+        if (ui_slider(slider_id, &app->val)) {
+            colour_changed = true;
+            app_sync_hex(app);
+        }
+
+        if (colour_changed && app->live_send && app->connected) {
+            /* Throttle so a drag does not flood the endpoint. */
+            if (GetTime() - last_live_send > 0.06) {
+                last_live_send = GetTime();
+                app_set_led(app);
+            }
+        }
+
+        s_text_slot = 0;    /* hand out fresh text storage each frame */
+        Clay_BeginLayout();
+
+        CLAY(CLAY_ID("Root"), {
+            .layout = {
+                .sizing = { CLAY_SIZING_GROW(0), CLAY_SIZING_GROW(0) },
+                .padding = CLAY_PADDING_ALL(14),
+                .childGap = 12,
+                .layoutDirection = CLAY_TOP_TO_BOTTOM,
+            },
+            .backgroundColor = C_BG,
+        }) {
+            /* ---- header ---- */
+            CLAY(CLAY_ID("Header"), {
+                .layout = {
+                    .sizing = { CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0) },
+                    .childGap = 10,
+                    .childAlignment = { .y = CLAY_ALIGN_Y_CENTER },
+                },
+            }) {
+                CLAY_AUTO_ID({ .layout = { .layoutDirection = CLAY_TOP_TO_BOTTOM,
+                                           .childGap = 2 } }) {
+                    CLAY_TEXT(CLAY_STRING("Custom USB Protocol"),
+                              CLAY_TEXT_CONFIG({ .fontId = FONT_BODY, .fontSize = 20,
+                                                 .textColor = C_FG }));
+                    CLAY_TEXT(CLAY_STRING("ESP32-S3 - vendor interface over libusb"),
+                              CLAY_TEXT_CONFIG({ .fontId = FONT_BODY, .fontSize = 13,
+                                                 .textColor = C_MUTED }));
+                }
+
+                /* Spacer pushes the controls to the right edge. */
+                CLAY_AUTO_ID({ .layout = { .sizing = { CLAY_SIZING_GROW(0) } } }) {}
+
+                CLAY_AUTO_ID({
+                    .layout = { .padding = { 10, 10, 6, 6 } },
+                    .cornerRadius = CLAY_CORNER_RADIUS(999),
+                    .border = { .color = C_LINE, .width = { 1, 1, 1, 1 } },
+                }) {
+                    CLAY_TEXT(dyn(app->connected ? "connected" : "disconnected"),
+                              CLAY_TEXT_CONFIG({
+                                  .fontId = FONT_MONO, .fontSize = 12,
+                                  .textColor = app->connected ? C_OK : C_MUTED }));
+                }
+
+                if (app->connected) {
+                    if (ui_button(CLAY_ID("Disconnect"), "Disconnect", false, true, false)) {
+                        app_disconnect(app);
+                    }
+                } else {
+                    if (ui_button(CLAY_ID("Connect"), "Connect", true, true, false)) {
+                        app_connect(app);
+                    }
+                }
+            }
+
+            /* ---- two columns ---- */
+            CLAY(CLAY_ID("Columns"), {
+                .layout = {
+                    .sizing = { CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0) },
+                    .childGap = 12,
+                },
+            }) {
+                /* NeoPixel */
+                UI_CARD(CLAY_ID("LedCard")) {
+                    ui_card_title("NEOPIXEL");
+
+                    CLAY_AUTO_ID({ .layout = { .childGap = 12 } }) {
+                        CLAY(wheel_id, {
+                            .layout = { .sizing = { CLAY_SIZING_FIXED(150),
+                                                    CLAY_SIZING_FIXED(150) } },
+                            .image = { .imageData = &s_wheel },
+                            .backgroundColor = C_TRANSPARENT,
+                        }) {}
+
+                        CLAY_AUTO_ID({
+                            .layout = {
+                                .sizing = { CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0) },
+                                .childGap = 8,
+                                .layoutDirection = CLAY_TOP_TO_BOTTOM,
+                            },
+                        }) {
+                            CLAY_TEXT(CLAY_STRING("Brightness"), CLAY_TEXT_CONFIG({
+                                .fontId = FONT_BODY, .fontSize = 12,
+                                .textColor = C_MUTED }));
+
+                            /* Declared here; the value was read further up. */
+                            CLAY(slider_id, {
+                                .layout = { .sizing = { CLAY_SIZING_GROW(0),
+                                                        CLAY_SIZING_FIXED(18) },
+                                            .childAlignment = { .y = CLAY_ALIGN_Y_CENTER } },
+                            }) {
+                                CLAY_AUTO_ID({
+                                    .layout = { .sizing = { CLAY_SIZING_GROW(0),
+                                                            CLAY_SIZING_FIXED(5) } },
+                                    .backgroundColor = C_LINE,
+                                    .cornerRadius = CLAY_CORNER_RADIUS(3),
+                                }) {}
+                            }
+
+                            CLAY_AUTO_ID({ .layout = { .childGap = 8,
+                                                       .childAlignment = { .y = CLAY_ALIGN_Y_CENTER } } }) {
+                                uint32_t rgb = app_rgb(app);
+                                CLAY_AUTO_ID({
+                                    .layout = { .sizing = { CLAY_SIZING_FIXED(34),
+                                                            CLAY_SIZING_FIXED(30) } },
+                                    .backgroundColor = COL((rgb >> 16) & 0xFF,
+                                                           (rgb >> 8) & 0xFF,
+                                                           rgb & 0xFF, 255),
+                                    .cornerRadius = CLAY_CORNER_RADIUS(8),
+                                    .border = { .color = C_LINE, .width = { 1, 1, 1, 1 } },
+                                }) {}
+
+                                ui_text_field(CLAY_ID("HexField"), app->hex,
+                                              APP_HEX_MAX, FONT_MONO, NULL);
+                            }
+
+                            ui_checkbox(CLAY_ID("Live"), "Send while dragging",
+                                        &app->live_send);
+
+                            CLAY_AUTO_ID({ .layout = { .childGap = 8 } }) {
+                                if (ui_button(CLAY_ID("SetLed"), "Set LED", true,
+                                              app->connected, true)) {
+                                    app_set_led(app);
+                                }
+                                if (ui_button(CLAY_ID("GetLed"), "Get", false,
+                                              app->connected, false)) {
+                                    app_get(app, "led");
+                                }
+                            }
+                        }
+                    }
+                }
+
+                /* Message + config */
+                CLAY_AUTO_ID({
+                    .layout = {
+                        .sizing = { CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0) },
+                        .childGap = 12,
+                        .layoutDirection = CLAY_TOP_TO_BOTTOM,
+                    },
+                }) {
+                    UI_CARD(CLAY_ID("MessageCard")) {
+                        ui_card_title("MESSAGE");
+
+                        bool submitted = false;
+                        ui_text_field(CLAY_ID("MessageField"), app->message,
+                                      APP_MESSAGE_MAX, FONT_BODY, &submitted);
+
+                        if (ui_button(CLAY_ID("SendMsg"), "Send", true,
+                                      app->connected, true) || submitted) {
+                            app_send_message(app);
+                        }
+                    }
+
+                    UI_CARD(CLAY_ID("ConfigCard")) {
+                        ui_card_title("CONFIG");
+
+                        ui_text_field(CLAY_ID("ConfigField"), app->config,
+                                      APP_CONFIG_MAX, FONT_MONO, NULL);
+
+                        CLAY_AUTO_ID({ .layout = { .childGap = 8 } }) {
+                            if (ui_button(CLAY_ID("GetCfg"), "Get", false,
+                                          app->connected, false)) {
+                                app_get(app, "config");
+                            }
+                            if (ui_button(CLAY_ID("SetCfg"), "Set", true,
+                                          app->connected, true)) {
+                                app_set_config(app);
+                            }
+                        }
+                    }
+                }
+            }
+
+            /* ---- traffic ---- */
+            UI_CARD(CLAY_ID("LogCard")) {
+                CLAY_AUTO_ID({ .layout = { .childGap = 12,
+                                           .childAlignment = { .y = CLAY_ALIGN_Y_CENTER } } }) {
+                    CLAY_TEXT(CLAY_STRING("TRAFFIC"), CLAY_TEXT_CONFIG({
+                        .fontId = FONT_BODY, .fontSize = 13, .textColor = C_MUTED }));
+
+                    CLAY_AUTO_ID({ .layout = { .sizing = { CLAY_SIZING_GROW(0) } } }) {}
+
+                    ui_checkbox(CLAY_ID("ShowHb"), "Show heartbeats",
+                                &app->show_heartbeats);
+
+                    if (ui_button(CLAY_ID("ClearLog"), "Clear", false, true, false)) {
+                        app_log_clear(app);
+                    }
+                }
+
+                CLAY(CLAY_ID("LogScroll"), {
+                    .layout = { .sizing = { CLAY_SIZING_GROW(0), CLAY_SIZING_GROW(0) },
+                                .padding = CLAY_PADDING_ALL(8),
+                                .childGap = 1,
+                                .layoutDirection = CLAY_TOP_TO_BOTTOM },
+                    .backgroundColor = C_FIELD,
+                    .cornerRadius = CLAY_CORNER_RADIUS(8),
+                    .clip = { .vertical = true,
+                              .childOffset = Clay_GetScrollOffset() },
+                }) {
+                    for (int i = 0; i < app->log_count; i++) {
+                        const app_log_entry_t *entry = app_log_at(app, i);
+                        CLAY_AUTO_ID({ .layout = { .sizing = {
+                                           CLAY_SIZING_GROW(0),
+                                           CLAY_SIZING_FIXED(LOG_ROW_H) } } }) {
+                            CLAY_TEXT(dyn(entry->text), CLAY_TEXT_CONFIG({
+                                .fontId = FONT_MONO, .fontSize = 12,
+                                .textColor = log_colour(entry->kind) }));
+                        }
+                    }
+                }
+            }
+        }
+
+        Clay_RenderCommandArray commands = Clay_EndLayout();
+
+        /* Needs this frame's content height, so it runs after the layout. */
+        ui_autoscroll_log(app, CLAY_ID("LogScroll"));
+
+        BeginDrawing();
+        ClearBackground((Color){ 0x14, 0x16, 0x1a, 255 });
+        Clay_Raylib_Render(commands);
+
+        /* Overlays Clay cannot express: the wheel marker and the slider knob. */
+        Clay_ElementData wheel_now = Clay_GetElementData(wheel_id);
+        if (wheel_now.found) {
+            ui_draw_wheel_marker(app, wheel_now.boundingBox);
+        }
+        ui_draw_slider_knob(slider_id, app->val);
+        ui_draw_toast(app);
+
+        EndDrawing();
+    }
+
+    if (s_wheel.id != 0) {
+        UnloadTexture(s_wheel);
+    }
+    tray_shutdown();
+    Clay_Raylib_Close();
+    free(memory);
+    return 0;
+}

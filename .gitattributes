@@ -1,0 +1,32 @@
+# Normalise line endings in the repository, then check out per-platform.
+* text=auto
+
+# Shell scripts must keep LF even on a Windows checkout. With core.autocrlf=true
+# they would otherwise arrive as CRLF, and the kernel reads the trailing CR as
+# part of the interpreter path: "bad interpreter: /usr/bin/env bash^M".
+*.sh text eol=lf
+
+# Batch files are the mirror image: cmd.exe wants CRLF.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Sources and web assets are text; let git normalise them.
+*.c    text
+*.h    text
+*.py   text
+*.js   text
+*.html text
+*.css  text
+*.md   text
+*.yml  text
+*.csv  text
+*.txt  text
+CMakeLists.txt text
+
+# Never touch binaries.
+*.png binary
+*.bin binary
+*.elf binary
+*.dll binary
+*.a   binary
+*.lib binary
