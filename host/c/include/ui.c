@@ -437,9 +437,19 @@ static void ui_draw_toast(const app_t *app)
 
     Rectangle box = { x, y, width, height };
 
-    DrawRectangleRounded(box, 0.18f, 8, Fade((Color){ 0x1c, 0x1f, 0x25, 255 }, alpha));
-    DrawRectangleRoundedLines(box, 0.18f, 8, 1.0f,
-                              Fade((Color){ 0x5b, 0x8c, 0xff, 255 }, alpha));
+    /*
+     * The border is an outer rounded rect with the fill inset by a pixel.
+     * DrawRectangleRoundedLines is avoided on purpose: raylib 5.5 dropped its
+     * lineThick parameter and moved it to DrawRectangleRoundedLinesEx, so the
+     * call does not compile against both 5.0 and 5.5.
+     */
+    DrawRectangleRounded(box, 0.18f, 8,
+                         Fade((Color){ 0x5b, 0x8c, 0xff, 255 }, alpha));
+
+    Rectangle inner = { box.x + 1.0f, box.y + 1.0f,
+                        box.width - 2.0f, box.height - 2.0f };
+    DrawRectangleRounded(inner, 0.18f, 8,
+                         Fade((Color){ 0x1c, 0x1f, 0x25, 255 }, alpha));
 
     DrawTextEx(font, title, (Vector2){ x + 14.0f, y + 9.0f }, 14.0f, 0.0f,
                Fade((Color){ 0x9a, 0xa1, 0xb1, 255 }, alpha));
