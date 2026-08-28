@@ -1,0 +1,4 @@
+## Dependencies of the neopixel component
+dependencies:
+  espressif/led_strip:
+    version: "^3.0.0"

@@ -1,0 +1,4 @@
+## Dependencies of the config component
+## cJSON left ESP-IDF core in v6.0 and is now a managed component.
+dependencies:
+  espressif/cjson: "^1.7.19"

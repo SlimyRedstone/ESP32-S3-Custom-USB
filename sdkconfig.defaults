@@ -1,0 +1,20 @@
+# Vendor-specific interface for the custom protocol (0 = disabled, the default)
+CONFIG_TINYUSB_VENDOR_COUNT=1
+
+# JSON replies exceed one 64-byte packet, so the TX FIFO must hold a whole
+# reply before the first flush. At 64 bytes, a partially queued reply lets
+# TinyUSB see an empty FIFO after a packet-sized transfer and emit a ZLP,
+# which ends the transfer early and truncates the reply on the host.
+CONFIG_TINYUSB_VENDOR_TX_BUFSIZE=512
+CONFIG_TINYUSB_VENDOR_RX_BUFSIZE=512
+
+# CDC-ACM serial port, second function of the composite device
+CONFIG_TINYUSB_CDC_ENABLED=y
+CONFIG_TINYUSB_CDC_COUNT=1
+
+# TinyUSB log verbosity (0-3)
+CONFIG_TINYUSB_DEBUG_LEVEL=1
+
+# Custom partition table: adds the "storage" SPIFFS partition for /config.json
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"

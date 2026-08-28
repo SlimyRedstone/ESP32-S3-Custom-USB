@@ -1,0 +1,650 @@
+/*
+ * Vendor bulk transport, CDC serial port and command dispatch.
+ * Descriptors live in usb_descriptors.c.
+ */
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "cJSON.h"
+
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "freertos/queue.h"
+#include "esp_log.h"
+
+#include "tinyusb.h"
+#include "tinyusb_default_config.h"
+#include "tinyusb_cdc_acm.h"
+
+#include "usb_proto.h"
+#include "usb_proto_descriptors.h"
+
+static const char *TAG = "usb_proto";
+
+#define VENDOR_WRITE_TIMEOUT_MS 100
+#define RX_QUEUE_DEPTH          8
+#define EVENT_QUEUE_DEPTH       8
+#define TASK_STACK              4096
+#define TASK_PRIO               4
+
+/* Reassembly buffer for JSON payloads spanning several bulk packets. */
+#define JSON_BUF_MAX            512
+
+/* Replies are built here; {"config":{...}} is the largest of them. */
+#define REPLY_BUF_MAX           320
+
+typedef struct {
+    uint16_t len;
+    uint8_t  data[USB_PROTO_EP_SIZE];
+} usb_packet_t;
+
+/* How long the receive colour stays on before reverting to the idle colour. */
+#define RECEIVE_FLASH_MS        120
+
+static usb_proto_config_t s_cfg;
+static QueueHandle_t      s_rx_queue;
+static QueueHandle_t      s_event_queue;
+static TaskHandle_t       s_task;
+static volatile bool      s_running;
+
+/* Status LED state, owned by the dispatch task. */
+static uint32_t   s_idle_color;
+static TickType_t s_flash_until;
+static bool       s_flashing;
+static bool       s_was_mounted;
+
+static void apply_led(uint32_t rgb)
+{
+    if (s_cfg.status_led && s_cfg.on_led_command) {
+        s_cfg.on_led_command(rgb);
+    }
+}
+
+/* ---------------------------------------------------- vendor transport --- */
+
+bool usb_proto_vendor_mounted(void)
+{
+    return tud_vendor_mounted();
+}
+
+/*
+ * Bounded on purpose: an unbounded retry loop here wedges the dispatch task,
+ * and then queued OUT packets never get serviced.
+ */
+esp_err_t usb_proto_vendor_send(const uint8_t *data, size_t len)
+{
+    if (data == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (!tud_vendor_mounted()) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    size_t sent = 0;
+    TickType_t deadline = xTaskGetTickCount() + pdMS_TO_TICKS(VENDOR_WRITE_TIMEOUT_MS);
+
+    while (sent < len) {
+        uint32_t n = tud_vendor_write(data + sent, len - sent);
+        if (n == 0) {
+            if (xTaskGetTickCount() >= deadline) {
+                ESP_LOGW(TAG, "tx stalled, dropped %u of %u bytes",
+                         (unsigned)(len - sent), (unsigned)len);
+                return ESP_ERR_TIMEOUT;
+            }
+            vTaskDelay(pdMS_TO_TICKS(1));
+            continue;
+        }
+        sent += n;
+        tud_vendor_write_flush();
+    }
+    return ESP_OK;
+}
+
+static void reply(const char *text)
+{
+    usb_proto_vendor_send((const uint8_t *)text, strlen(text));
+}
+
+esp_err_t usb_proto_send_event(const void *data, size_t len)
+{
+    if (data == NULL || len == 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (len > USB_PROTO_EP_SIZE) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+    if (s_event_queue == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    usb_packet_t evt;
+    evt.len = (uint16_t)len;
+    memcpy(evt.data, data, len);
+
+    if (xQueueSend(s_event_queue, &evt, 0) != pdTRUE) {
+        ESP_LOGW(TAG, "event queue full, dropped %u bytes", (unsigned)len);
+        return ESP_ERR_NO_MEM;
+    }
+    return ESP_OK;
+}
+
+void usb_proto_send_event_cb(void *text)
+{
+    if (text == NULL) {
+        return;
+    }
+    usb_proto_send_event(text, strlen((const char *)text));
+}
+
+/*
+ * Host -> device. Runs on the TinyUSB task, so hand off and return fast.
+ *
+ * The read is mandatory, not a convenience. TinyUSB re-arms the OUT endpoint
+ * only when the class RX FIFO has a whole packet of free space, and that FIFO
+ * is exactly one packet deep (CFG_TUD_VENDOR_RX_BUFSIZE == wMaxPacketSize).
+ * Copying out of `buffer` without calling tud_vendor_n_read() leaves the FIFO
+ * occupied, so the endpoint is never re-armed and every later OUT transfer
+ * NAKs until the host times out.
+ */
+void tud_vendor_rx_cb(uint8_t itf, uint8_t const *buffer, uint16_t bufsize)
+{
+    (void)buffer;
+    (void)bufsize;
+
+    if (s_rx_queue == NULL) {
+        return;
+    }
+
+    /*
+     * Loop until the FIFO is empty rather than reading once. A single callback
+     * can carry more than pkt.data holds whenever CFG_TUD_VENDOR_EPSIZE exceeds
+     * the 64-byte packet size, and any remainder left behind keeps the FIFO
+     * occupied, which is precisely what stops the endpoint being re-armed.
+     */
+    for (;;) {
+        usb_packet_t pkt;
+        pkt.len = (uint16_t)tud_vendor_n_read(itf, pkt.data, sizeof(pkt.data));
+        if (pkt.len == 0) {
+            return;
+        }
+
+        if (xQueueSend(s_rx_queue, &pkt, 0) != pdTRUE) {
+            ESP_LOGW(TAG, "rx queue full, dropped %u bytes", pkt.len);
+        }
+    }
+}
+
+/* ---------------------------------------------------------- cdc serial --- */
+
+static uint8_t s_cdc_buf[CONFIG_TINYUSB_CDC_RX_BUFSIZE];
+
+esp_err_t usb_proto_cdc_print(const char *text, size_t len)
+{
+    if (text == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    tinyusb_cdcacm_write_queue(TINYUSB_CDC_ACM_0, (const uint8_t *)text, len);
+    return tinyusb_cdcacm_write_flush(TINYUSB_CDC_ACM_0, 0);
+}
+
+static void cdc_rx_cb(int itf, cdcacm_event_t *event)
+{
+    (void)event;
+
+    size_t rx_size = 0;
+    if (tinyusb_cdcacm_read(itf, s_cdc_buf, sizeof(s_cdc_buf), &rx_size) != ESP_OK) {
+        return;
+    }
+    if (rx_size == 0) {
+        return;
+    }
+
+    ESP_LOGI(TAG, "cdc rx %u bytes", (unsigned)rx_size);
+
+    if (s_cfg.cdc_echo) {
+        tinyusb_cdcacm_write_queue(itf, s_cdc_buf, rx_size);
+        tinyusb_cdcacm_write_flush(itf, 0);
+    }
+}
+
+static void cdc_line_state_cb(int itf, cdcacm_event_t *event)
+{
+    (void)itf;
+    ESP_LOGI(TAG, "cdc line state: dtr=%d rts=%d",
+             event->line_state_changed_data.dtr,
+             event->line_state_changed_data.rts);
+}
+
+/* ------------------------------------------------------ command parse --- */
+
+static bool parse_hex6(const char *text, uint32_t *out_rgb)
+{
+    if (text == NULL) {
+        return false;
+    }
+    if (*text == '#') {
+        text++;
+    }
+    if (strlen(text) != 6) {
+        return false;
+    }
+
+    uint32_t rgb = 0;
+    for (int i = 0; i < 6; i++) {
+        char c = text[i];
+        int nib;
+
+        if (c >= '0' && c <= '9')      nib = c - '0';
+        else if (c >= 'a' && c <= 'f') nib = c - 'a' + 10;
+        else if (c >= 'A' && c <= 'F') nib = c - 'A' + 10;
+        else return false;
+
+        rgb = (rgb << 4) | (uint32_t)nib;
+    }
+
+    *out_rgb = rgb;
+    return true;
+}
+
+static void reply_ok(void)
+{
+    reply("{\"ok\":true}");
+}
+
+static void reply_error(const char *message)
+{
+    char buf[REPLY_BUF_MAX];
+    snprintf(buf, sizeof(buf), "{\"ok\":false,\"error\":\"%s\"}", message);
+    ESP_LOGW(TAG, "%s", message);
+    reply(buf);
+}
+
+/* ----------------------------------------------------------- dispatch --- */
+
+static bool apply_set_led(const cJSON *led)
+{
+    uint32_t rgb;
+    if (!parse_hex6(led->valuestring, &rgb)) {
+        reply_error("led must be RRGGBB hex");
+        return false;
+    }
+    if (s_cfg.on_led_command == NULL) {
+        reply_error("no led handler");
+        return false;
+    }
+
+    esp_err_t err = s_cfg.on_led_command(rgb);
+    ESP_LOGI(TAG, "set led -> #%06X (%s)", (unsigned)rgb, esp_err_to_name(err));
+    if (err != ESP_OK) {
+        reply_error(esp_err_to_name(err));
+        return false;
+    }
+
+    /* A colour chosen by the host becomes the new resting colour, so the next
+       receive flash returns to it rather than to led_connected. */
+    s_idle_color = rgb;
+    s_flashing = false;
+    return true;
+}
+
+static bool apply_set_message(const cJSON *message)
+{
+    const char *text = message->valuestring;
+    size_t len = strlen(text);
+
+    if (s_cfg.on_text_message) {
+        s_cfg.on_text_message(text, len);
+    } else {
+        ESP_LOGI(TAG, "message: %s", text);
+        usb_proto_cdc_print(text, len);
+        usb_proto_cdc_print("\r\n", 2);
+    }
+    return true;
+}
+
+static bool apply_set_config(const cJSON *config)
+{
+    if (s_cfg.on_config_set == NULL) {
+        reply_error("no config handler");
+        return false;
+    }
+
+    char *text = cJSON_PrintUnformatted(config);
+    if (text == NULL) {
+        reply_error("out of memory");
+        return false;
+    }
+
+    esp_err_t err = s_cfg.on_config_set(text);
+    ESP_LOGI(TAG, "set config %s (%s)", text, esp_err_to_name(err));
+    cJSON_free(text);
+
+    if (err != ESP_OK) {
+        reply_error(esp_err_to_name(err));
+        return false;
+    }
+    return true;
+}
+
+static void handle_set(const cJSON *set)
+{
+    int applied = 0;
+
+    const cJSON *led = cJSON_GetObjectItemCaseSensitive(set, "led");
+    if (cJSON_IsString(led)) {
+        if (!apply_set_led(led)) return;
+        applied++;
+    }
+
+    const cJSON *message = cJSON_GetObjectItemCaseSensitive(set, "message");
+    if (cJSON_IsString(message)) {
+        if (!apply_set_message(message)) return;
+        applied++;
+    }
+
+    const cJSON *config = cJSON_GetObjectItemCaseSensitive(set, "config");
+    if (cJSON_IsObject(config)) {
+        if (!apply_set_config(config)) return;
+        applied++;
+    }
+
+    if (applied == 0) {
+        reply_error("no known key in set");
+        return;
+    }
+    reply_ok();
+}
+
+static void handle_get(const char *what)
+{
+    char buf[REPLY_BUF_MAX];
+
+    if (strcmp(what, "led") == 0) {
+        if (s_cfg.on_led_query == NULL) {
+            reply_error("no led source");
+            return;
+        }
+        snprintf(buf, sizeof(buf), "{\"led\":\"%06X\"}",
+                 (unsigned)(s_cfg.on_led_query() & 0xFFFFFF));
+        reply(buf);
+        return;
+    }
+
+    if (strcmp(what, "config") == 0) {
+        if (s_cfg.on_config_get == NULL) {
+            reply_error("no config source");
+            return;
+        }
+
+        char *text = s_cfg.on_config_get();
+        if (text == NULL) {
+            reply_error("config unavailable");
+            return;
+        }
+
+        int n = snprintf(buf, sizeof(buf), "{\"config\":%s}", text);
+        free(text);
+
+        if (n < 0 || n >= (int)sizeof(buf)) {
+            reply_error("config too large");
+            return;
+        }
+        reply(buf);
+        return;
+    }
+
+    reply_error("unknown get target");
+}
+
+/*
+ * One complete JSON object from the host.
+ *
+ * Replies are sent from here, so this must run on the dispatch task -- it is
+ * the single writer for the vendor IN endpoint.
+ */
+static void handle_json(const char *text)
+{
+    cJSON *root = cJSON_Parse(text);
+    if (!cJSON_IsObject(root)) {
+        cJSON_Delete(root);
+        reply_error("expected a JSON object");
+        return;
+    }
+
+    const cJSON *set = cJSON_GetObjectItemCaseSensitive(root, "set");
+    const cJSON *get = cJSON_GetObjectItemCaseSensitive(root, "get");
+
+    if (cJSON_IsObject(set)) {
+        handle_set(set);
+    } else if (cJSON_IsString(get)) {
+        handle_get(get->valuestring);
+    } else {
+        reply_error("expected \"set\" or \"get\"");
+    }
+
+    cJSON_Delete(root);
+}
+
+static void handle_unparsed(const uint8_t *data, uint16_t len)
+{
+    if (s_cfg.on_raw_packet) {
+        s_cfg.on_raw_packet(data, len);
+        return;
+    }
+    reply_error("invalid JSON");
+}
+
+static void dispatch_task(void *arg)
+{
+    (void)arg;
+
+    usb_packet_t pkt;
+    uint32_t heartbeat = 0;
+
+    /* Static: too large for the task stack, and only this task touches it. */
+    static char json_buf[JSON_BUF_MAX + 1];
+    size_t json_len = 0;
+
+    TickType_t next_beat = xTaskGetTickCount() + pdMS_TO_TICKS(1000);
+
+    /*
+     * Everything that writes to the vendor IN endpoint funnels through this
+     * task, so the FIFO keeps a single writer. The short poll interval is what
+     * lets asynchronous events (buttons, sensors) go out promptly without a
+     * second writer.
+     */
+    while (s_running) {
+        const bool mounted = tud_vendor_mounted();
+
+        /* USB became ready: show the connected colour and make it the resting
+           colour for later receive flashes. */
+        if (mounted != s_was_mounted) {
+            s_was_mounted = mounted;
+            if (mounted) {
+                s_idle_color = s_cfg.led_connected;
+                s_flashing = false;
+                apply_led(s_idle_color);
+            }
+        }
+
+        if (xQueueReceive(s_rx_queue, &pkt, pdMS_TO_TICKS(20)) == pdTRUE) {
+            apply_led(s_cfg.led_receive);
+            s_flash_until = xTaskGetTickCount() + pdMS_TO_TICKS(RECEIVE_FLASH_MS);
+            s_flashing = true;
+
+            /*
+             * A JSON document can span several bulk packets, so accumulate and
+             * retry the parse. cJSON rejects a truncated object, which is what
+             * tells us to keep waiting.
+             *
+             * A packet shorter than the endpoint size ends the USB transfer; if
+             * the buffer still does not parse at that point it never will, so
+             * report the error rather than waiting for bytes that never come.
+             */
+            if (json_len + pkt.len < JSON_BUF_MAX) {
+                memcpy(json_buf + json_len, pkt.data, pkt.len);
+                json_len += pkt.len;
+                json_buf[json_len] = '\0';
+
+                cJSON *probe = cJSON_Parse(json_buf);
+                if (probe != NULL) {
+                    cJSON_Delete(probe);
+                    handle_json(json_buf);
+                    json_len = 0;
+                } else if (pkt.len < USB_PROTO_EP_SIZE) {
+                    handle_unparsed((const uint8_t *)json_buf, json_len);
+                    json_len = 0;
+                }
+            } else {
+                reply_error("payload too large");
+                json_len = 0;
+            }
+        }
+
+        /* Receive flash expired: back to the resting colour. */
+        if (s_flashing && xTaskGetTickCount() >= s_flash_until) {
+            s_flashing = false;
+            apply_led(s_idle_color);
+        }
+
+        while (xQueueReceive(s_event_queue, &pkt, 0) == pdTRUE) {
+            if (tud_vendor_mounted()) {
+                usb_proto_vendor_send(pkt.data, pkt.len);
+                ESP_LOGI(TAG, "event: %.*s", (int)pkt.len, (const char *)pkt.data);
+            }
+        }
+
+        if (s_cfg.heartbeat && tud_vendor_mounted() &&
+            xTaskGetTickCount() >= next_beat) {
+            next_beat = xTaskGetTickCount() + pdMS_TO_TICKS(1000);
+
+            uint8_t beat[5] = {
+                0x5A,
+                (uint8_t)(heartbeat),
+                (uint8_t)(heartbeat >> 8),
+                (uint8_t)(heartbeat >> 16),
+                (uint8_t)(heartbeat >> 24),
+            };
+            heartbeat++;
+            usb_proto_vendor_send(beat, sizeof(beat));
+        }
+    }
+
+    vTaskDelete(NULL);
+}
+
+/* --------------------------------------------------------------- init --- */
+
+static void usb_event_cb(tinyusb_event_t *event, void *arg)
+{
+    (void)arg;
+    switch (event->id) {
+    case TINYUSB_EVENT_ATTACHED:
+        ESP_LOGI(TAG, "attached to host");
+        break;
+    case TINYUSB_EVENT_DETACHED:
+        ESP_LOGI(TAG, "detached from host");
+        break;
+    default:
+        break;
+    }
+}
+
+esp_err_t usb_proto_start(const usb_proto_config_t *config)
+{
+    if (config == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (s_running) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    s_cfg = *config;
+
+    s_idle_color  = s_cfg.led_connected;
+    s_flashing    = false;
+    s_was_mounted = false;
+
+    s_rx_queue = xQueueCreate(RX_QUEUE_DEPTH, sizeof(usb_packet_t));
+    if (s_rx_queue == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+
+    s_event_queue = xQueueCreate(EVENT_QUEUE_DEPTH, sizeof(usb_packet_t));
+    if (s_event_queue == NULL) {
+        vQueueDelete(s_rx_queue);
+        s_rx_queue = NULL;
+        return ESP_ERR_NO_MEM;
+    }
+
+    usb_proto_descriptors_init(&s_cfg);
+
+    int string_count = 0;
+    const char **strings = usb_proto_string_descriptors(&string_count);
+
+    tinyusb_config_t tusb_cfg = TINYUSB_DEFAULT_CONFIG(usb_event_cb);
+    tusb_cfg.descriptor.device            = usb_proto_device_descriptor();
+    tusb_cfg.descriptor.string            = strings;
+    tusb_cfg.descriptor.string_count      = string_count;
+    tusb_cfg.descriptor.full_speed_config = usb_proto_config_descriptor();
+
+    esp_err_t err = tinyusb_driver_install(&tusb_cfg);
+    if (err != ESP_OK) {
+        goto fail;
+    }
+
+    const tinyusb_config_cdcacm_t acm_cfg = {
+        .cdc_port                    = TINYUSB_CDC_ACM_0,
+        .callback_rx                 = cdc_rx_cb,
+        .callback_line_state_changed = cdc_line_state_cb,
+    };
+    err = tinyusb_cdcacm_init(&acm_cfg);
+    if (err != ESP_OK) {
+        tinyusb_driver_uninstall();
+        goto fail;
+    }
+
+    s_running = true;
+    if (xTaskCreate(dispatch_task, "usb_proto", TASK_STACK, NULL,
+                    TASK_PRIO, &s_task) != pdPASS) {
+        s_running = false;
+        tinyusb_cdcacm_deinit(TINYUSB_CDC_ACM_0);
+        tinyusb_driver_uninstall();
+        err = ESP_ERR_NO_MEM;
+        goto fail;
+    }
+
+    ESP_LOGI(TAG, "composite device started (%04X:%04X): CDC + vendor",
+             s_cfg.vid, s_cfg.pid);
+    return ESP_OK;
+
+fail:
+    vQueueDelete(s_rx_queue);
+    s_rx_queue = NULL;
+    vQueueDelete(s_event_queue);
+    s_event_queue = NULL;
+    return err;
+}
+
+esp_err_t usb_proto_stop(void)
+{
+    if (!s_running) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    /* Let dispatch_task observe the flag and delete itself. */
+    s_running = false;
+    vTaskDelay(pdMS_TO_TICKS(1100));
+    s_task = NULL;
+
+    tinyusb_cdcacm_deinit(TINYUSB_CDC_ACM_0);
+    esp_err_t err = tinyusb_driver_uninstall();
+
+    vQueueDelete(s_rx_queue);
+    s_rx_queue = NULL;
+    vQueueDelete(s_event_queue);
+    s_event_queue = NULL;
+    return err;
+}

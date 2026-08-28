@@ -1,0 +1,7 @@
+## IDF Component Manager Manifest File
+## Component dependencies now live with the components that use them:
+##   components/usb_proto  -> espressif/esp_tinyusb
+##   components/neopixel   -> espressif/led_strip
+dependencies:
+  idf:
+    version: ">=6.0"

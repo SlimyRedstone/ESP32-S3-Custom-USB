@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Custom USB Protocol</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header>
+  <div>
+    <h1>Custom USB Protocol</h1>
+    <p class="sub">ESP32-S3 &middot; vendor interface over WebUSB</p>
+  </div>
+  <div class="conn">
+    <span id="status" class="badge off">disconnected</span>
+    <button id="connect" class="primary">Connect</button>
+    <button id="disconnect" hidden>Disconnect</button>
+  </div>
+</header>
+
+<p id="unsupported" class="warn" hidden>
+  This browser has no WebUSB. Use Chrome or Edge, served from
+  <code>http://localhost</code>.
+</p>
+
+<main>
+
+  <section class="card">
+    <h2>NeoPixel</h2>
+
+    <div class="picker">
+      <div class="wheel-wrap">
+        <canvas id="wheel" width="260" height="260"></canvas>
+        <div id="marker" class="marker"></div>
+      </div>
+
+      <div class="controls">
+        <label class="field">
+          <span>Brightness</span>
+          <input id="value" type="range" min="0" max="100" value="100">
+        </label>
+
+        <div class="swatch-row">
+          <div id="swatch" class="swatch"></div>
+          <label class="field grow">
+            <span>Hex</span>
+            <input id="hex" type="text" value="#FF0000" spellcheck="false"
+                   maxlength="7" autocomplete="off">
+          </label>
+        </div>
+
+        <label class="check">
+          <input id="live" type="checkbox">
+          <span>Send while dragging</span>
+        </label>
+
+        <div class="btn-row">
+          <button id="send-led" class="primary grow" disabled>Set LED</button>
+          <button id="get-led" disabled>Get</button>
+        </div>
+        <p class="hint">Sends <code>{"set":{"led":"RRGGBB"}}</code></p>
+      </div>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Message</h2>
+    <p class="hint">
+      Printed on the CDC serial port. The device reassembles transfers larger
+      than one 64-byte packet, so the limit is the 512-byte JSON buffer.
+    </p>
+    <form id="msg-form" class="msg-row">
+      <input id="msg" type="text" placeholder="This is a test" maxlength="400"
+             autocomplete="off">
+      <button id="send-msg" class="primary" disabled>Send</button>
+    </form>
+    <p class="hint">Sends <code>{"set":{"message":"&lt;text&gt;"}}</code></p>
+  </section>
+
+  <section class="card">
+    <h2>Config</h2>
+    <p class="hint">
+      Contents of <code>/config.json</code>. <strong>Get</strong> reads it from
+      the device, <strong>Set</strong> merges what you type back and saves it to
+      SPIFFS. Partial objects are fine &mdash; absent keys keep their value.
+    </p>
+    <textarea id="config" spellcheck="false" rows="7"
+              placeholder='{"led":{"on_boot":"FF0000"}}'></textarea>
+    <div class="btn-row">
+      <button id="get-config" disabled>Get</button>
+      <button id="set-config" class="primary grow" disabled>Set</button>
+    </div>
+    <p id="config-status" class="hint"></p>
+  </section>
+
+  <section class="card log-card">
+    <div class="log-head">
+      <h2>Traffic</h2>
+      <label class="check">
+        <input id="show-heartbeat" type="checkbox">
+        <span>Show heartbeats</span>
+      </label>
+      <button id="clear-log">Clear</button>
+    </div>
+    <div id="log" class="log" role="log" aria-live="polite"></div>
+  </section>
+
+</main>
+
+<footer>
+  Serve with <code>python -m http.server</code> from this folder, then open
+  <code>http://localhost:8000</code>. WebUSB needs a secure context.
+</footer>
+
+<script src="app.js"></script>
+</body>
+</html>
