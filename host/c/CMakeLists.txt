@@ -10,10 +10,14 @@ add_executable(CustomUSBProtocol
     include/jsoncmd.c
     include/proto.c
 )
-set_target_properties(CustomUSBProtocol PROPERTIES
-    OUTPUT_NAME "main"
-    SUFFIX ".exe"
-)
+set_target_properties(CustomUSBProtocol PROPERTIES OUTPUT_NAME "main")
+
+# Only Windows gets the extension. CMake would append it there anyway, but
+# stating it keeps the intent obvious -- setting SUFFIX unconditionally is what
+# produced a "main.exe" on Linux.
+if(WIN32)
+    set_target_properties(CustomUSBProtocol PROPERTIES SUFFIX ".exe")
+endif()
 
 # Our own headers. libusb's header is NOT here -- it comes from vcpkg or the
 # system, and a stale copy in this directory would shadow it.

@@ -53,8 +53,8 @@ static const char s_langid[] = { 0x09, 0x04 };   /* en-US */
 
 static const char *s_string_desc[] = {
     s_langid,               /* 0: LANGID            */
-    "MyCorp",               /* 1: manufacturer      */
-    "Custom USB Protocol",  /* 2: product           */
+    "SlimyRedstone",        /* 1: manufacturer      */
+    "S3 Custom USB Dongle",  /* 2: product           */
     "0001",                 /* 3: serial            */
     "CDC Serial Port",      /* 4: CDC interface     */
     "Vendor Interface",     /* 5: vendor interface  */
