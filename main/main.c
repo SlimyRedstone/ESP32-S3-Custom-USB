@@ -1,27 +1,3 @@
-/*
- * Composite USB device on an ESP32-S3: a CDC-ACM serial port plus a
- * vendor-specific interface carrying a small text protocol.
- *
- * All USB work lives in the usb_proto component, LED work in neopixel, the
- * GPIO interrupt in button, and the JSON settings in config. This file only
- * declares the hardware and wires the pieces together.
- *
- * Commands, sent as JSON to the vendor bulk OUT endpoint:
- *   {"set":{"led":"ABCDEF"}}              set the NeoPixel
- *   {"set":{"message":"a test"}}          print on the CDC serial port
- *   {"set":{"config":{ ... }}}            merge into /config.json and save
- *   {"get":"led"}     -> {"led":"ABCDEF"}
- *   {"get":"config"}  -> {"config":{ ... }}
- *
- * Unsolicited, on the vendor bulk IN endpoint:
- *   "Button Triggered"  once per GPIO0 press
- *   0x5A + uint32       heartbeat counter, once per second while idle
- *
- * LED status colours come from /config.json on the SPIFFS volume.
- *
- * USB-OTG port only: GPIO19 = D-, GPIO20 = D+.
- */
-
 #include "esp_err.h"
 
 #include "button.h"
