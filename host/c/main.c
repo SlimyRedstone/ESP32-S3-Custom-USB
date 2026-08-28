@@ -21,8 +21,17 @@
  * include/jsoncmd.[ch], and packet decoding in include/proto.[ch].
  */
 
+/*
+ * sigaction and friends are POSIX, not C99. glibc hides them under a strict
+ * -std=c99, so ask for them before any system header is pulled in.
+ */
+#if !defined(_WIN32) && !defined(_POSIX_C_SOURCE)
+#define _POSIX_C_SOURCE 200809L
+#endif
+
 #include <signal.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "jsoncmd.h"
@@ -33,7 +42,11 @@
 #define USB_PID         0x4001
 
 #define TIMEOUT_MS      1000
-#define LISTEN_MS       1200
+/*
+ * Poll interval for the listener. This is the worst-case delay before ctrl-c
+ * is noticed, so it is kept short; an idle wakeup costs nothing.
+ */
+#define LISTEN_MS       250
 
 /* Matches JSON_BUF_MAX in the firmware. */
 #define CMD_MAX         512
@@ -51,7 +64,39 @@ static volatile sig_atomic_t s_stop = 0;
 static void on_interrupt(int sig)
 {
     (void)sig;
+
+    /* A second ctrl-c leaves immediately, so the program can never feel stuck
+       even if a transfer refuses to unwind. 130 is the usual SIGINT status. */
+    if (s_stop) {
+        _Exit(130);
+    }
     s_stop = 1;
+}
+
+static void install_signal_handlers(void)
+{
+#ifdef _WIN32
+    signal(SIGINT, on_interrupt);
+    signal(SIGTERM, on_interrupt);
+#else
+    /*
+     * sigaction, not signal(): glibc's signal() installs the handler with
+     * SA_RESTART, so the kernel transparently restarts the poll() inside
+     * libusb instead of letting it fail with EINTR. The loop then cannot
+     * notice the flag until the transfer times out on its own.
+     *
+     * Clearing SA_RESTART lets a blocked transfer unwind as soon as the
+     * signal lands.
+     */
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = on_interrupt;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = 0;
+
+    sigaction(SIGINT, &sa, NULL);
+    sigaction(SIGTERM, &sa, NULL);
+#endif
 }
 
 /*
@@ -69,7 +114,7 @@ static int run_one_shot(usbdev_t *dev, const char *cmd)
         return 1;
     }
 
-    for (int attempt = 0; attempt < REPLY_ATTEMPTS; attempt++) {
+    for (int attempt = 0; attempt < REPLY_ATTEMPTS && !s_stop; attempt++) {
         unsigned char buf[REPLY_MAX];
         int len = 0;
 
@@ -106,8 +151,12 @@ static int run_listener(usbdev_t *dev)
         int len = 0;
 
         int rc = usbdev_recv(dev, buf, sizeof(buf), &len, LISTEN_MS);
-        if (rc == LIBUSB_ERROR_TIMEOUT) {
-            continue;   /* nothing to report this second */
+
+        if (s_stop) {
+            break;      /* ctrl-c landed during the transfer */
+        }
+        if (rc == LIBUSB_ERROR_TIMEOUT || rc == LIBUSB_ERROR_INTERRUPTED) {
+            continue;   /* nothing to report, or a signal woke the poll */
         }
         if (rc != 0) {
             fprintf(stderr, "IN failed: %s\n", libusb_error_name(rc));
@@ -128,7 +177,7 @@ int main(int argc, char **argv)
     setvbuf(stdout, NULL, _IOLBF, 0);
 
     /* Leave the interface claimed for no longer than one poll after ctrl-c. */
-    signal(SIGINT, on_interrupt);
+    install_signal_handlers();
 
     char cmd[CMD_MAX];
     if (argc > 1 && !jsoncmd_build(argc, argv, cmd, sizeof(cmd))) {
