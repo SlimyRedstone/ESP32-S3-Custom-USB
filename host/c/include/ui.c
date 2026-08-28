@@ -531,8 +531,25 @@ int ui_run(app_t *app)
     }
     SetTargetFPS(target_fps);
 
-    /* Owns the window icon as well as the tray, because both go through the
-       platform shell rather than raylib. */
+    /*
+     * Window icon. raylib has no .ico loader, so the PNG beside it is what gets
+     * used here; the .ico is still the better source on Windows and tray_init()
+     * overrides this with it below.
+     *
+     * On Linux this is the only thing that sets an icon at all, since the tray
+     * layer is a stub there.
+     */
+    Image icon = LoadImage("resources/icon.png");
+    if (icon.data) {
+        ImageFormat(&icon, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8);
+        SetWindowIcon(icon);
+        UnloadImage(icon);
+    } else {
+        fprintf(stderr, "could not load resources/icon.png\n");
+    }
+
+    /* On Windows this also owns the tray, and replaces the icon above with the
+       multi-resolution .ico through the shell. */
     tray_init(GetWindowHandle(), "resources/icon.ico", "Custom USB Protocol");
 
     /* Roboto if it is beside the executable, raylib's built-in font otherwise. */
