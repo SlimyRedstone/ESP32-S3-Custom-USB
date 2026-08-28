@@ -3,7 +3,8 @@
  * C equivalent of ../vendor_test.py, built on libusb-1.0.
  *
  * Usage:
- *   main                            listen for heartbeats and events
+ *   main                            open the Clay interface
+ *   main listen                     stream events on the console instead
  *   main led ABCDEF                 set the NeoPixel
  *   main message hello there        print on the CDC serial port
  *   main get led                    read the current colour
@@ -17,8 +18,6 @@
  *   {"get":"led"}                  -> {"led":"ABCDEF"}
  *   {"get":"config"}               -> {"config":{...}}
  *
- * USB plumbing lives in include/usbdev.[ch], command building in
- * include/jsoncmd.[ch], and packet decoding in include/proto.[ch].
  */
 
 /*
@@ -34,8 +33,10 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "app.h"
 #include "jsoncmd.h"
 #include "proto.h"
+#include "ui.h"
 #include "usbdev.h"
 
 #define USB_VID         0x303A
@@ -179,8 +180,20 @@ int main(int argc, char **argv)
     /* Leave the interface claimed for no longer than one poll after ctrl-c. */
     install_signal_handlers();
 
+    /* No arguments: the graphical client, which manages its own connection. */
+    if (argc == 1) {
+        static app_t app;
+        app_init(&app);
+        app_connect(&app);          /* best effort; the window opens regardless */
+        int rc = ui_run(&app);
+        app_shutdown(&app);
+        return rc;
+    }
+
+    bool listen_only = (strcmp(argv[1], "listen") == 0);
+
     char cmd[CMD_MAX];
-    if (argc > 1 && !jsoncmd_build(argc, argv, cmd, sizeof(cmd))) {
+    if (!listen_only && !jsoncmd_build(argc, argv, cmd, sizeof(cmd))) {
         return 1;   /* nothing opened yet, so nothing to release */
     }
 
@@ -193,7 +206,7 @@ int main(int argc, char **argv)
     /* Clear stale heartbeats so a reply is not queued behind them. */
     usbdev_drain(&dev);
 
-    int status = (argc > 1) ? run_one_shot(&dev, cmd) : run_listener(&dev);
+    int status = listen_only ? run_listener(&dev) : run_one_shot(&dev, cmd);
 
     usbdev_close(&dev);
     return status;

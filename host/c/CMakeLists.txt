@@ -9,7 +9,15 @@ add_executable(CustomUSBProtocol
     include/usbdev.c
     include/jsoncmd.c
     include/proto.c
+    include/app.c
+    include/ui.c
+    include/tray.c
 )
+
+# Clay is a single-header library; exactly one translation unit may define its
+# implementation, and ui.c is that unit.
+set_source_files_properties(include/ui.c PROPERTIES
+    COMPILE_DEFINITIONS "CLAY_IMPLEMENTATION")
 set_target_properties(CustomUSBProtocol PROPERTIES OUTPUT_NAME "main")
 
 # Only Windows gets the extension. CMake would append it there anyway, but
@@ -19,9 +27,55 @@ if(WIN32)
     set_target_properties(CustomUSBProtocol PROPERTIES SUFFIX ".exe")
 endif()
 
-# Our own headers. libusb's header is NOT here -- it comes from vcpkg or the
-# system, and a stale copy in this directory would shadow it.
-target_include_directories(CustomUSBProtocol PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include")
+# Our own headers, plus the vendored Clay single-headers in libs/. libusb's
+# header is NOT here -- it comes from vcpkg or the system, and a stale copy in
+# this directory would shadow it.
+target_include_directories(CustomUSBProtocol PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/include"
+    "${CMAKE_CURRENT_SOURCE_DIR}/libs")
+
+# --- raylib, the renderer behind Clay ----------------------------------------
+#
+# Clay only computes layout, so it needs a backend to draw and to own the
+# window. vcpkg provides a config package on Windows; elsewhere raylib comes
+# from the system and pkg-config or a plain link is enough.
+find_package(raylib CONFIG QUIET)
+if(TARGET raylib)
+    target_link_libraries(CustomUSBProtocol PRIVATE raylib)
+    message(STATUS "raylib found via: CMake package")
+else()
+    find_package(PkgConfig QUIET)
+    if(PkgConfig_FOUND)
+        pkg_check_modules(RAYLIB QUIET IMPORTED_TARGET raylib)
+    endif()
+    if(TARGET PkgConfig::RAYLIB)
+        target_link_libraries(CustomUSBProtocol PRIVATE PkgConfig::RAYLIB)
+        message(STATUS "raylib found via: pkg-config")
+    else()
+        message(FATAL_ERROR
+            "raylib not found.\n"
+            "  vcpkg:           vcpkg install raylib:<triplet>\n"
+            "  Debian/Ubuntu:   sudo apt install libraylib-dev\n"
+            "  macOS:           brew install raylib")
+    endif()
+endif()
+
+# raylib and the wheel generator both need the math library on Unix.
+if(UNIX)
+    target_link_libraries(CustomUSBProtocol PRIVATE m)
+endif()
+
+# The tray and the window icon go through the Windows shell.
+if(WIN32)
+    target_link_libraries(CustomUSBProtocol PRIVATE shell32 user32 gdi32)
+endif()
+
+# The interface loads its fonts from resources/ relative to the working
+# directory, so keep a copy beside the executable.
+add_custom_command(TARGET CustomUSBProtocol POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+            "${CMAKE_CURRENT_SOURCE_DIR}/resources"
+            "$<TARGET_FILE_DIR:CustomUSBProtocol>/resources")
 
 if(MSVC)
     target_compile_definitions(CustomUSBProtocol PRIVATE _CRT_SECURE_NO_WARNINGS)

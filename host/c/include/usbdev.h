@@ -15,7 +15,7 @@
 
 #include <libusb.h>
 
-typedef struct {
+typedef struct usbdev {
     libusb_context       *ctx;
     libusb_device        *dev;
     libusb_device_handle *handle;
