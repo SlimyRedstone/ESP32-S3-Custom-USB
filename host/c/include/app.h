@@ -68,6 +68,9 @@ typedef struct {
        a drag does not write the file on every frame. */
     bool config_dirty;
 
+    /* From the "debug" key. When false the traffic console is hidden. */
+    bool debug;
+
     bool show_heartbeats;
     bool live_send;
     unsigned long heartbeats;

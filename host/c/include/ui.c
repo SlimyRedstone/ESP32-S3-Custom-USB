@@ -431,6 +431,81 @@ static Clay_Color log_colour(app_log_kind_t kind)
 
 /* ---------------------------------------------------------------- menu --- */
 
+#define MENU_WIDTH    190.0f
+#define MENU_ITEM_H   32.0f
+#define MENU_PAD      6.0f
+#define MENU_ITEMS    2
+
+static const char *const s_menu_items[MENU_ITEMS] = {
+    "Save config", "Load config",
+};
+
+/* Panel hanging below the hamburger button. */
+static Rectangle ui_menu_rect(Clay_BoundingBox button)
+{
+    return (Rectangle){
+        button.x,
+        button.y + button.height + 6.0f,
+        MENU_WIDTH,
+        MENU_ITEMS * MENU_ITEM_H + 2.0f * MENU_PAD,
+    };
+}
+
+/* Index of the item under the pointer, or -1. */
+static int ui_menu_hit(Rectangle panel)
+{
+    Vector2 mouse = GetMousePosition();
+    if (!CheckCollisionPointRec(mouse, panel)) {
+        return -1;
+    }
+
+    float local = mouse.y - (panel.y + MENU_PAD);
+    if (local < 0.0f) {
+        return -1;
+    }
+
+    int index = (int)(local / MENU_ITEM_H);
+    return (index >= 0 && index < MENU_ITEMS) ? index : -1;
+}
+
+/*
+ * Drawn with raylib after everything else. Clay renders before the colour
+ * wheel marker, the slider knob and the faders, so a Clay-drawn panel ended up
+ * underneath them and their pointer handling ignored it.
+ */
+static void ui_draw_menu(Rectangle panel)
+{
+    int hovered = ui_menu_hit(panel);
+
+    DrawRectangleRounded(panel, 0.12f, 8, (Color){ 0x2b, 0x30, 0x39, 255 });
+
+    Rectangle inner = { panel.x + 1.0f, panel.y + 1.0f,
+                        panel.width - 2.0f, panel.height - 2.0f };
+    DrawRectangleRounded(inner, 0.12f, 8, (Color){ 0x1c, 0x1f, 0x25, 255 });
+
+    for (int i = 0; i < MENU_ITEMS; i++) {
+        Rectangle row = {
+            panel.x + MENU_PAD,
+            panel.y + MENU_PAD + (float)i * MENU_ITEM_H,
+            panel.width - 2.0f * MENU_PAD,
+            MENU_ITEM_H,
+        };
+
+        if (i == hovered) {
+            DrawRectangleRounded(row, 0.25f, 8, (Color){ 0x5b, 0x8c, 0xff, 255 });
+        }
+
+        Font font = s_fonts[FONT_BODY];
+        float size = 15.0f;
+        Vector2 extent = MeasureTextEx(font, s_menu_items[i], size, 0.0f);
+
+        DrawTextEx(font, s_menu_items[i],
+                   (Vector2){ row.x + 10.0f,
+                              row.y + (row.height - extent.y) / 2.0f },
+                   size, 0.0f, (Color){ 0xe7, 0xe9, 0xee, 255 });
+    }
+}
+
 static void ui_menu_save_config(app_t *app)
 {
     char path[512];
@@ -749,14 +824,51 @@ int ui_run(app_t *app)
                                     (Clay_Vector2){ 0, GetMouseWheelMove() * 32 },
                                     GetFrameTime());
 
+        /*
+         * The menu is resolved first and, while open, swallows the pointer.
+         * The wheel, sliders and faders all hit-test raw mouse coordinates
+         * without knowing what is drawn above them, so without this a click on
+         * a menu entry also dragged whatever sat underneath it.
+         */
+        Rectangle menu_panel = { 0 };
+        bool menu_blocks = false;
+
+        if (s_menu_open) {
+            Clay_ElementData button = Clay_GetElementData(CLAY_ID("MenuButton"));
+            if (button.found) {
+                menu_panel = ui_menu_rect(button.boundingBox);
+                Vector2 mouse = GetMousePosition();
+                Clay_BoundingBox b = button.boundingBox;
+
+                bool over_button = mouse.x >= b.x && mouse.x <= b.x + b.width &&
+                                   mouse.y >= b.y && mouse.y <= b.y + b.height;
+                menu_blocks = CheckCollisionPointRec(mouse, menu_panel) || over_button;
+
+                if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+                    int item = ui_menu_hit(menu_panel);
+                    if (item == 0) {
+                        s_menu_open = false;
+                        ui_menu_save_config(app);
+                    } else if (item == 1) {
+                        s_menu_open = false;
+                        ui_menu_load_config(app);
+                    } else if (!over_button) {
+                        s_menu_open = false;   /* clicked away */
+                    }
+                }
+            } else {
+                s_menu_open = false;   /* button not laid out yet */
+            }
+        }
+
         /* Interaction against the previous frame's boxes, before laying out
            the next one. */
         bool colour_changed = false;
         Clay_ElementData wheel_data = Clay_GetElementData(wheel_id);
-        if (wheel_data.found) {
+        if (wheel_data.found && !menu_blocks) {
             ui_wheel_interact(app, wheel_data.boundingBox, &colour_changed);
         }
-        for (int i = 0; i < APP_FADER_COUNT; i++) {
+        for (int i = 0; i < APP_FADER_COUNT && !menu_blocks; i++) {
             Clay_ElementData slot = Clay_GetElementData(CLAY_IDI("Fader", i));
             if (!slot.found) {
                 continue;
@@ -780,7 +892,7 @@ int ui_run(app_t *app)
                            APP_FADER_MAX, ui_on_fader_change, app);
         }
 
-        if (ui_slider(slider_id, &app->val)) {
+        if (!menu_blocks && ui_slider(slider_id, &app->val)) {
             colour_changed = true;
             app_sync_hex(app);
         }
@@ -791,13 +903,6 @@ int ui_run(app_t *app)
                 last_live_send = GetTime();
                 app_set_led(app);
             }
-        }
-
-        /* A press outside the button or the panel closes the menu. */
-        if (s_menu_open && IsMouseButtonPressed(MOUSE_BUTTON_LEFT) &&
-            !Clay_PointerOver(CLAY_ID("MenuButton")) &&
-            !Clay_PointerOver(CLAY_ID("Menu"))) {
-            s_menu_open = false;
         }
 
         s_text_slot = 0;    /* hand out fresh text storage each frame */
@@ -1005,7 +1110,7 @@ int ui_run(app_t *app)
                     }
 
                     UI_CARD(CLAY_ID("ConfigCard")) {
-                        ui_card_title("CONFIG");
+                        ui_card_title("DEVICE CONFIG");
 
                         ui_text_field(CLAY_ID("ConfigField"), app->config,
                                       APP_CONFIG_MAX, FONT_MONO, NULL);
@@ -1024,42 +1129,10 @@ int ui_run(app_t *app)
                 }
             }
 
-            /* ---- hamburger dropdown ----
-               Declared last so it renders above the cards, and attached to the
-               button so it follows it if the header ever reflows. */
-            if (s_menu_open) {
-                CLAY(CLAY_ID("Menu"), {
-                    .layout = {
-                        .sizing = { CLAY_SIZING_FIXED(190), CLAY_SIZING_FIT(0) },
-                        .padding = CLAY_PADDING_ALL(6),
-                        .childGap = 4,
-                        .layoutDirection = CLAY_TOP_TO_BOTTOM,
-                    },
-                    .backgroundColor = C_CARD,
-                    .cornerRadius = CLAY_CORNER_RADIUS(10),
-                    .border = { .color = C_LINE, .width = { 1, 1, 1, 1 } },
-                    .floating = {
-                        .attachTo = CLAY_ATTACH_TO_ELEMENT_WITH_ID,
-                        .parentId = CLAY_ID("MenuButton").id,
-                        .attachPoints = { .element = CLAY_ATTACH_POINT_LEFT_TOP,
-                                          .parent = CLAY_ATTACH_POINT_LEFT_BOTTOM },
-                        .offset = { 0.0f, 6.0f },
-                    },
-                }) {
-                    if (ui_button(CLAY_ID("MenuSave"), "Save config",
-                                  false, true, true)) {
-                        s_menu_open = false;
-                        ui_menu_save_config(app);
-                    }
-                    if (ui_button(CLAY_ID("MenuLoad"), "Load config",
-                                  false, true, true)) {
-                        s_menu_open = false;
-                        ui_menu_load_config(app);
-                    }
-                }
-            }
-
-            /* ---- traffic ---- */
+            /* ---- traffic ----
+               Declared only when "debug" is set in config.json; leaving it out
+               of the layout hands its height back to the cards above. */
+            if (app->debug) {
             UI_CARD(CLAY_ID("LogCard")) {
                 CLAY_AUTO_ID({ .layout = { .childGap = 12,
                                            .childAlignment = { .y = CLAY_ALIGN_Y_CENTER } } }) {
@@ -1098,6 +1171,7 @@ int ui_run(app_t *app)
                     }
                 }
             }
+            }   /* if (app->debug) */
         }
 
         if (app->config_dirty && GetTime() - last_config_save > 1.0) {
@@ -1108,7 +1182,9 @@ int ui_run(app_t *app)
         Clay_RenderCommandArray commands = Clay_EndLayout();
 
         /* Needs this frame's content height, so it runs after the layout. */
-        ui_autoscroll_log(app, CLAY_ID("LogScroll"));
+        if (app->debug) {
+            ui_autoscroll_log(app, CLAY_ID("LogScroll"));
+        }
 
         BeginDrawing();
         ClearBackground((Color){ 0x14, 0x16, 0x1a, 255 });
@@ -1138,6 +1214,11 @@ int ui_run(app_t *app)
         }
 
         ui_draw_toast(app);
+
+        /* Last of all, so it covers the wheel marker, knob and faders. */
+        if (s_menu_open && menu_panel.width > 0.0f) {
+            ui_draw_menu(menu_panel);
+        }
 
         EndDrawing();
     }
