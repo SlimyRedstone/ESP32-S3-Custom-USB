@@ -106,6 +106,56 @@ void app_log(app_t *a, app_log_kind_t kind, const char *fmt, ...)
     va_end(args);
 }
 
+void app_config_load(app_t *a)
+{
+    if (config_load(APP_CONFIG_PATH, a->sliders, APP_FADER_COUNT)) {
+        app_log(a, APP_LOG_EVENT, "loaded %s", APP_CONFIG_PATH);
+    } else {
+        /* Absent or unreadable: start from the defaults and write them out so
+           the file exists for editing. */
+        app_log(a, APP_LOG_EVENT, "no %s, using defaults", APP_CONFIG_PATH);
+        a->config_dirty = true;
+    }
+}
+
+void app_config_save(app_t *a)
+{
+    if (!a->config_dirty) {
+        return;
+    }
+    a->config_dirty = false;
+
+    if (!config_save(APP_CONFIG_PATH, a->sliders, APP_FADER_COUNT)) {
+        app_log(a, APP_LOG_ERROR, "could not write %s", APP_CONFIG_PATH);
+    }
+}
+
+bool app_config_save_as(app_t *a, const char *path)
+{
+    if (!config_save(path, a->sliders, APP_FADER_COUNT)) {
+        app_log(a, APP_LOG_ERROR, "could not write %s", path);
+        return false;
+    }
+
+    app_log(a, APP_LOG_EVENT, "saved %s", path);
+    return true;
+}
+
+bool app_config_load_from(app_t *a, const char *path)
+{
+    if (!config_load(path, a->sliders, APP_FADER_COUNT)) {
+        /* config_load has already filled in the defaults, so the strip stays
+           usable; only report that the file was not understood. */
+        app_log(a, APP_LOG_ERROR, "could not read %s, defaults applied", path);
+        a->config_dirty = true;
+        return false;
+    }
+
+    app_log(a, APP_LOG_EVENT, "loaded %s", path);
+    a->config_dirty = true;     /* mirror it into the working config.json */
+    return true;
+}
+
 void app_notify(app_t *a, const char *text)
 {
     snprintf(a->notice, sizeof(a->notice), "%s", text ? text : "");
@@ -142,11 +192,15 @@ void app_init(app_t *a)
     snprintf(a->message, sizeof(a->message), "This is a test");
     app_sync_hex(a);
 
+    app_config_load(a);
+
     app_log(a, APP_LOG_EVENT, "not connected");
 }
 
 void app_shutdown(app_t *a)
 {
+    app_config_save(a);
+
     if (a->connected) {
         app_disconnect(a);
     }

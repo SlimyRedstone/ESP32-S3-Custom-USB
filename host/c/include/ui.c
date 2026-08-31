@@ -5,6 +5,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "fader.h"
+#include "filedialog.h"
 #include "tray.h"
 
 #include "clay.h"
@@ -30,6 +32,29 @@ static const Clay_Color C_RX        = COL(0xc7, 0x9b, 0xff, 255);
 static const Clay_Color C_TRANSPARENT = COL(0, 0, 0, 0);
 
 enum { FONT_BODY = 0, FONT_MONO = 1, FONT_COUNT = 2 };
+
+/* Whether the hamburger dropdown is open. */
+static bool s_menu_open;
+
+/* Rename state: which fader is being renamed, and the text being typed. */
+static int  s_rename = -1;
+static char s_rename_buf[CONFIG_NAME_MAX];
+
+/*
+ * Invoked by the fader library whenever a value changes. Nothing is sent to the
+ * device yet, so this only records the movement; wiring a command in means
+ * replacing the body.
+ */
+static void ui_on_fader_change(int id, int value, void *user)
+{
+    app_t *app = (app_t *)user;
+    if (id < 0 || id >= APP_FADER_COUNT) {
+        return;
+    }
+
+    app_log(app, APP_LOG_EVENT, "%s = %d", app->sliders[id].name, value);
+    app->config_dirty = true;
+}
 
 #define UI_PI        3.14159265358979323846f
 #define WHEEL_PIXELS 200        /* texture resolution of the colour wheel */
@@ -404,6 +429,109 @@ static Clay_Color log_colour(app_log_kind_t kind)
     }
 }
 
+/* ---------------------------------------------------------------- menu --- */
+
+static void ui_menu_save_config(app_t *app)
+{
+    char path[512];
+
+    if (!filedialog_save("Save configuration", "config.json", path, sizeof(path))) {
+        /* Cancelled, or no chooser installed. */
+        if (!filedialog_available()) {
+            app_log(app, APP_LOG_ERROR,
+                    "no file chooser available (install zenity or kdialog)");
+        }
+        return;
+    }
+    app_config_save_as(app, path);
+}
+
+static void ui_menu_load_config(app_t *app)
+{
+    char path[512];
+
+    if (!filedialog_open("Load configuration", path, sizeof(path))) {
+        if (!filedialog_available()) {
+            app_log(app, APP_LOG_ERROR,
+                    "no file chooser available (install zenity or kdialog)");
+        }
+        return;
+    }
+    app_config_load_from(app, path);
+}
+
+/*
+ * Rename editor. Typing is fed by ui_pump_text_input() through s_focus; this
+ * only deals with finishing or abandoning the edit.
+ */
+static void ui_update_rename(app_t *app)
+{
+    if (s_rename < 0) {
+        return;
+    }
+
+    if (IsKeyPressed(KEY_ENTER)) {
+        if (s_rename_buf[0] != (char)0) {
+            snprintf(app->sliders[s_rename].name, CONFIG_NAME_MAX, "%s",
+                     s_rename_buf);
+            app->config_dirty = true;
+            app_log(app, APP_LOG_EVENT, "renamed fader %d to %s",
+                    s_rename, s_rename_buf);
+        }
+        s_rename = -1;
+        s_focus = NULL;
+        return;
+    }
+
+    /* Escape abandons the edit. ui_pump_text_input() also drops focus on
+       escape, which is harmless here. */
+    if (IsKeyPressed(KEY_ESCAPE)) {
+        s_rename = -1;
+        s_focus = NULL;
+    }
+}
+
+/* Editor drawn over the fader being renamed. */
+static void ui_draw_rename(const app_t *app, Clay_BoundingBox box)
+{
+    (void)app;
+
+    Font font = s_fonts[FONT_BODY];
+    float size = 15.0f;
+
+    char shown[CONFIG_NAME_MAX + 2];
+    snprintf(shown, sizeof(shown), "%s%s", s_rename_buf,
+             (fmodf((float)GetTime(), 1.0f) < 0.5f) ? "_" : "");
+
+    Vector2 extent = MeasureTextEx(font, shown, size, 0.0f);
+    float width = fmaxf(extent.x + 20.0f, 150.0f);
+    float height = 34.0f;
+
+    /* Centred on the fader, just above it, and kept on screen. */
+    float x = box.x + box.width / 2.0f - width / 2.0f;
+    float y = box.y - height - 8.0f;
+
+    if (x < 6.0f) {
+        x = 6.0f;
+    }
+    if (x + width > (float)GetScreenWidth() - 6.0f) {
+        x = (float)GetScreenWidth() - width - 6.0f;
+    }
+    if (y < 6.0f) {
+        y = box.y + 6.0f;
+    }
+
+    Rectangle rect = { x, y, width, height };
+    DrawRectangleRounded(rect, 0.25f, 8, (Color){ 0x5b, 0x8c, 0xff, 255 });
+
+    Rectangle inner = { x + 1.0f, y + 1.0f, width - 2.0f, height - 2.0f };
+    DrawRectangleRounded(inner, 0.25f, 8, (Color){ 0x14, 0x16, 0x1a, 255 });
+
+    DrawTextEx(font, shown,
+               (Vector2){ x + 10.0f, y + (height - extent.y) / 2.0f },
+               size, 0.0f, (Color){ 0xe7, 0xe9, 0xee, 255 });
+}
+
 /* --------------------------------------------------------- notification -- */
 
 #define TOAST_SECONDS   4.0
@@ -570,6 +698,7 @@ int ui_run(app_t *app)
     Clay_ElementId slider_id = CLAY_ID("Brightness");
 
     double last_live_send = 0.0;
+    double last_config_save = 0.0;
 
     bool quit = false;
 
@@ -607,6 +736,7 @@ int ui_run(app_t *app)
         }
 
         ui_pump_text_input();
+        ui_update_rename(app);
         ui_rebuild_wheel(app);
 
         Clay_SetLayoutDimensions((Clay_Dimensions){
@@ -626,6 +756,30 @@ int ui_run(app_t *app)
         if (wheel_data.found) {
             ui_wheel_interact(app, wheel_data.boundingBox, &colour_changed);
         }
+        for (int i = 0; i < APP_FADER_COUNT; i++) {
+            Clay_ElementData slot = Clay_GetElementData(CLAY_IDI("Fader", i));
+            if (!slot.found) {
+                continue;
+            }
+
+            /* Right-click opens the rename editor for this fader. */
+            if (IsMouseButtonPressed(MOUSE_BUTTON_RIGHT)) {
+                Vector2 m = GetMousePosition();
+                Clay_BoundingBox b = slot.boundingBox;
+                if (m.x >= b.x && m.x <= b.x + b.width &&
+                    m.y >= b.y && m.y <= b.y + b.height) {
+                    s_rename = i;
+                    snprintf(s_rename_buf, sizeof(s_rename_buf), "%s",
+                             app->sliders[i].name);
+                    s_focus = s_rename_buf;         /* route typing here */
+                    s_focus_cap = sizeof(s_rename_buf);
+                }
+            }
+
+            fader_interact(i, slot.boundingBox, &app->sliders[i].value,
+                           APP_FADER_MAX, ui_on_fader_change, app);
+        }
+
         if (ui_slider(slider_id, &app->val)) {
             colour_changed = true;
             app_sync_hex(app);
@@ -637,6 +791,13 @@ int ui_run(app_t *app)
                 last_live_send = GetTime();
                 app_set_led(app);
             }
+        }
+
+        /* A press outside the button or the panel closes the menu. */
+        if (s_menu_open && IsMouseButtonPressed(MOUSE_BUTTON_LEFT) &&
+            !Clay_PointerOver(CLAY_ID("MenuButton")) &&
+            !Clay_PointerOver(CLAY_ID("Menu"))) {
+            s_menu_open = false;
         }
 
         s_text_slot = 0;    /* hand out fresh text storage each frame */
@@ -659,6 +820,34 @@ int ui_run(app_t *app)
                     .childAlignment = { .y = CLAY_ALIGN_Y_CENTER },
                 },
             }) {
+                /* Hamburger. Three bars rather than a glyph, so it does not
+                   depend on the loaded font having one. */
+                CLAY(CLAY_ID("MenuButton"), {
+                    .layout = {
+                        .sizing = { CLAY_SIZING_FIXED(34), CLAY_SIZING_FIXED(30) },
+                        .padding = CLAY_PADDING_ALL(8),
+                        .childGap = 4,
+                        .layoutDirection = CLAY_TOP_TO_BOTTOM,
+                        .childAlignment = { .y = CLAY_ALIGN_Y_CENTER },
+                    },
+                    .backgroundColor = (s_menu_open || Clay_Hovered())
+                                     ? C_LINE : C_CARD,
+                    .cornerRadius = CLAY_CORNER_RADIUS(8),
+                    .border = { .color = C_LINE, .width = { 1, 1, 1, 1 } },
+                }) {
+                    if (clicked(true)) {
+                        s_menu_open = !s_menu_open;
+                    }
+                    for (int bar = 0; bar < 3; bar++) {
+                        CLAY(CLAY_IDI("MenuBar", bar), {
+                            .layout = { .sizing = { CLAY_SIZING_GROW(0),
+                                                    CLAY_SIZING_FIXED(2) } },
+                            .backgroundColor = C_FG,
+                            .cornerRadius = CLAY_CORNER_RADIUS(1),
+                        }) {}
+                    }
+                }
+
                 CLAY_AUTO_ID({ .layout = { .layoutDirection = CLAY_TOP_TO_BOTTOM,
                                            .childGap = 2 } }) {
                     CLAY_TEXT(CLAY_STRING("Custom USB Protocol"),
@@ -772,6 +961,28 @@ int ui_run(app_t *app)
                     }
                 }
 
+                /* Faders. Clay only reserves the slots; fader_draw paints
+                   the gradient track, knob and rotated label afterwards. */
+                UI_CARD(CLAY_ID("FaderCard")) {
+                    ui_card_title("FADERS");
+
+                    CLAY_AUTO_ID({
+                        .layout = {
+                            .sizing = { CLAY_SIZING_FIT(0),
+                                        CLAY_SIZING_FIXED(FADER_SLOT_HEIGHT) },
+                            .childGap = 6,
+                        },
+                    }) {
+                        for (int i = 0; i < APP_FADER_COUNT; i++) {
+                            CLAY(CLAY_IDI("Fader", i), {
+                                .layout = { .sizing = {
+                                    CLAY_SIZING_FIXED(FADER_SLOT_WIDTH),
+                                    CLAY_SIZING_FIXED(FADER_SLOT_HEIGHT) } },
+                            }) {}
+                        }
+                    }
+                }
+
                 /* Message + config */
                 CLAY_AUTO_ID({
                     .layout = {
@@ -809,6 +1020,41 @@ int ui_run(app_t *app)
                                 app_set_config(app);
                             }
                         }
+                    }
+                }
+            }
+
+            /* ---- hamburger dropdown ----
+               Declared last so it renders above the cards, and attached to the
+               button so it follows it if the header ever reflows. */
+            if (s_menu_open) {
+                CLAY(CLAY_ID("Menu"), {
+                    .layout = {
+                        .sizing = { CLAY_SIZING_FIXED(190), CLAY_SIZING_FIT(0) },
+                        .padding = CLAY_PADDING_ALL(6),
+                        .childGap = 4,
+                        .layoutDirection = CLAY_TOP_TO_BOTTOM,
+                    },
+                    .backgroundColor = C_CARD,
+                    .cornerRadius = CLAY_CORNER_RADIUS(10),
+                    .border = { .color = C_LINE, .width = { 1, 1, 1, 1 } },
+                    .floating = {
+                        .attachTo = CLAY_ATTACH_TO_ELEMENT_WITH_ID,
+                        .parentId = CLAY_ID("MenuButton").id,
+                        .attachPoints = { .element = CLAY_ATTACH_POINT_LEFT_TOP,
+                                          .parent = CLAY_ATTACH_POINT_LEFT_BOTTOM },
+                        .offset = { 0.0f, 6.0f },
+                    },
+                }) {
+                    if (ui_button(CLAY_ID("MenuSave"), "Save config",
+                                  false, true, true)) {
+                        s_menu_open = false;
+                        ui_menu_save_config(app);
+                    }
+                    if (ui_button(CLAY_ID("MenuLoad"), "Load config",
+                                  false, true, true)) {
+                        s_menu_open = false;
+                        ui_menu_load_config(app);
                     }
                 }
             }
@@ -854,6 +1100,11 @@ int ui_run(app_t *app)
             }
         }
 
+        if (app->config_dirty && GetTime() - last_config_save > 1.0) {
+            last_config_save = GetTime();
+            app_config_save(app);
+        }
+
         Clay_RenderCommandArray commands = Clay_EndLayout();
 
         /* Needs this frame's content height, so it runs after the layout. */
@@ -869,6 +1120,23 @@ int ui_run(app_t *app)
             ui_draw_wheel_marker(app, wheel_now.boundingBox);
         }
         ui_draw_slider_knob(slider_id, app->val);
+
+        for (int i = 0; i < APP_FADER_COUNT; i++) {
+            Clay_ElementData slot = Clay_GetElementData(CLAY_IDI("Fader", i));
+            if (slot.found) {
+                fader_draw(slot.boundingBox, app->sliders[i].value,
+                           APP_FADER_MAX, app->sliders[i].name,
+                           &s_fonts[FONT_BODY]);
+            }
+        }
+
+        if (s_rename >= 0) {
+            Clay_ElementData slot = Clay_GetElementData(CLAY_IDI("Fader", s_rename));
+            if (slot.found) {
+                ui_draw_rename(app, slot.boundingBox);
+            }
+        }
+
         ui_draw_toast(app);
 
         EndDrawing();

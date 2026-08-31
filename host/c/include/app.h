@@ -19,12 +19,21 @@
  */
 typedef struct usbdev usbdev_t;
 
+#include "config.h"
+
 #define APP_LOG_CAPACITY   256
 #define APP_LOG_TEXT_MAX   200
 
 #define APP_MESSAGE_MAX    192
 #define APP_CONFIG_MAX     512
 #define APP_HEX_MAX        8
+
+/* Four faders, 12-bit like the DAC range they are meant to drive. */
+#define APP_FADER_COUNT    4
+#define APP_FADER_MAX      4095
+
+/* Written beside the executable, next to resources/. */
+#define APP_CONFIG_PATH    "config.json"
 
 typedef enum {
     APP_LOG_TX,        /*!< something we sent            */
@@ -51,6 +60,13 @@ typedef struct {
     char message[APP_MESSAGE_MAX];
     char config[APP_CONFIG_MAX];
     char hex[APP_HEX_MAX];
+
+    /* Fader values (0..APP_FADER_MAX, bottom to top) and their names. */
+    config_slider_t sliders[APP_FADER_COUNT];
+
+    /* Set when a fader moves or is renamed; the UI flushes it periodically so
+       a drag does not write the file on every frame. */
+    bool config_dirty;
 
     bool show_heartbeats;
     bool live_send;
@@ -87,6 +103,18 @@ void app_set_led(app_t *a);
 void app_get(app_t *a, const char *what);
 void app_send_message(app_t *a);
 void app_set_config(app_t *a);
+
+/** Load config.json, falling back to the defaults when it is missing. */
+void app_config_load(app_t *a);
+
+/** Write config.json if anything has changed. */
+void app_config_save(app_t *a);
+
+/** Write the current configuration to an arbitrary path. */
+bool app_config_save_as(app_t *a, const char *path);
+
+/** Replace the configuration from an arbitrary path. */
+bool app_config_load_from(app_t *a, const char *path);
 
 /** Raise a notification for the UI to surface. */
 void app_notify(app_t *a, const char *text);

@@ -12,6 +12,9 @@ add_executable(CustomUSBProtocol
     include/app.c
     include/ui.c
     include/tray.c
+    include/fader.c
+    include/config.c
+    include/filedialog.c
 )
 
 # Clay is a single-header library; exactly one translation unit may define its
@@ -67,7 +70,7 @@ endif()
 
 # The tray and the window icon go through the Windows shell.
 if(WIN32)
-    target_link_libraries(CustomUSBProtocol PRIVATE shell32 user32 gdi32)
+    target_link_libraries(CustomUSBProtocol PRIVATE shell32 user32 gdi32 comdlg32)
 endif()
 
 # The interface loads its fonts from resources/ relative to the working
