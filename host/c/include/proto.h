@@ -13,7 +13,6 @@
 
 #include <stdbool.h>
 
-/** Tag byte prefixing the binary heartbeat packet. */
 #define PROTO_HEARTBEAT_TAG 0x5A
 
 typedef enum {
@@ -23,7 +22,6 @@ typedef enum {
     PROTO_EVENT,
 } proto_kind_t;
 
-/** Classify one received packet. */
 proto_kind_t proto_classify(const unsigned char *data, int len);
 
 /**
@@ -32,7 +30,6 @@ proto_kind_t proto_classify(const unsigned char *data, int len);
 bool proto_heartbeat_count(const unsigned char *data, int len,
                            unsigned long *out_count);
 
-/** Print one packet in a form suited to its kind. */
 void proto_print(const unsigned char *data, int len);
 
 #endif /* PROTO_H */

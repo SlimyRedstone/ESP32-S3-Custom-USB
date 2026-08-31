@@ -21,8 +21,6 @@
 /* Bound the work per frame in case the device is chatty. */
 #define POLL_MAX_PACKETS 8
 
-/* ------------------------------------------------------------- colour --- */
-
 void app_hsv_to_rgb(float h, float s, float v, uint8_t *r, uint8_t *g, uint8_t *b)
 {
     float c = v * s;
@@ -83,8 +81,6 @@ void app_sync_hex(app_t *a)
     snprintf(a->hex, sizeof(a->hex), "%06X", (unsigned)app_rgb(a));
 }
 
-/* ---------------------------------------------------------------- log --- */
-
 void app_log(app_t *a, app_log_kind_t kind, const char *fmt, ...)
 {
     int slot;
@@ -92,7 +88,6 @@ void app_log(app_t *a, app_log_kind_t kind, const char *fmt, ...)
         slot = (a->log_first + a->log_count) % APP_LOG_CAPACITY;
         a->log_count++;
     } else {
-        /* Full: overwrite the oldest and advance the start. */
         slot = a->log_first;
         a->log_first = (a->log_first + 1) % APP_LOG_CAPACITY;
     }
@@ -177,8 +172,6 @@ const app_log_entry_t *app_log_at(const app_t *a, int index)
     return &a->log[(a->log_first + index) % APP_LOG_CAPACITY];
 }
 
-/* ---------------------------------------------------------------- usb --- */
-
 void app_init(app_t *a)
 {
     memset(a, 0, sizeof(*a));
@@ -259,8 +252,6 @@ void app_send_json(app_t *a, const char *json)
     }
 }
 
-/* Interpret one packet. Replies and events are logged; a reported colour or
-   configuration is folded back into the UI state. */
 static void app_handle_packet(app_t *a, const unsigned char *data, int len)
 {
     unsigned long count;
@@ -277,8 +268,6 @@ static void app_handle_packet(app_t *a, const unsigned char *data, int len)
     case PROTO_INTERRUPT: {
         app_log(a, APP_LOG_EVENT, "<- %.*s", len, (const char *)data);
 
-        /* {"interrupt":{"gpio":0,"state":0,"message":"..."}} -- surface the
-           message, falling back to the raw packet if it is missing. */
         const char *message = jsoncmd_find_string(data, len, "message");
         if (message && message[0]) {
             app_notify(a, message);
@@ -299,7 +288,6 @@ static void app_handle_packet(app_t *a, const unsigned char *data, int len)
 
     app_log(a, APP_LOG_RX, "<- %.*s", len, (const char *)data);
 
-    /* {"led":"ABCDEF"} -- adopt the colour the device reports. */
     const char *led = jsoncmd_find_string(data, len, "led");
     if (led) {
         unsigned rgb;
@@ -309,7 +297,6 @@ static void app_handle_packet(app_t *a, const unsigned char *data, int len)
         return;
     }
 
-    /* {"config":{...}} -- put the object into the editor. */
     const char *config = jsoncmd_find_object(data, len, "config");
     if (config) {
         size_t n = strlen(config);
@@ -348,8 +335,6 @@ void app_poll(app_t *a)
         }
     }
 }
-
-/* ----------------------------------------------------------- commands --- */
 
 void app_set_led(app_t *a)
 {

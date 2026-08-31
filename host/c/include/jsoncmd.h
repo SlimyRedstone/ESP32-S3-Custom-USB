@@ -43,7 +43,6 @@ bool jsoncmd_append(char *out, size_t out_size, const char *raw);
  */
 bool jsoncmd_build(int argc, char **argv, char *out, size_t out_size);
 
-/** Print the command-line syntax to @p f. */
 void jsoncmd_usage(FILE *f);
 
 /*

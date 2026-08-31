@@ -36,10 +36,8 @@ typedef struct usbdev {
  */
 int usbdev_open(usbdev_t *d, uint16_t vid, uint16_t pid);
 
-/** Release and close everything. Safe on a partially opened device. */
 void usbdev_close(usbdev_t *d);
 
-/** Print the manufacturer, product and serial strings the device reports. */
 void usbdev_print_identity(const usbdev_t *d);
 
 /** Send one bulk transfer. Returns 0, or a negative libusb error code. */
@@ -54,7 +52,6 @@ int usbdev_send(usbdev_t *d, const void *data, size_t len, unsigned timeout_ms);
 int usbdev_recv(usbdev_t *d, void *buf, size_t cap, int *out_len,
                 unsigned timeout_ms);
 
-/** Discard anything the device has already queued, e.g. stale heartbeats. */
 void usbdev_drain(usbdev_t *d);
 
 #endif /* USBDEV_H */

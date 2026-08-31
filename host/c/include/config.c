@@ -36,9 +36,6 @@ void config_defaults(config_slider_t *out, int count, bool *debug)
     }
 }
 
-/* ------------------------------------------------------------- reading --- */
-
-/* Step over whitespace. */
 static const char *skip_space(const char *at)
 {
     while (*at == ' ' || *at == '\t' || *at == '\n' || *at == '\r') {
@@ -105,7 +102,6 @@ static void read_top_bool(const char *doc, const char *key, bool *out)
     }
 }
 
-/* Copy a JSON string value into @p dest, undoing the escapes we emit. */
 static void read_string(const char *at, char *dest, size_t dest_size)
 {
     if (*at != '"') {
@@ -237,9 +233,6 @@ bool config_load(const char *path, config_slider_t *out, int count, bool *debug)
     return found > 0;
 }
 
-/* ------------------------------------------------------------- writing --- */
-
-/* Escape the characters that would otherwise break out of a JSON string. */
 static void write_escaped(FILE *f, const char *text)
 {
     for (const char *p = text; *p; p++) {

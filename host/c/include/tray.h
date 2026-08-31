@@ -28,19 +28,14 @@
  */
 bool tray_init(void *window_handle, const char *icon_path, const char *tooltip);
 
-/** Release the tray icon. Safe to call when tray_init() failed. */
 void tray_shutdown(void);
 
-/** True when the platform supports the tray and setup succeeded. */
 bool tray_available(void);
 
-/** Hide the window and place an icon in the notification area. */
 void tray_minimize(void);
 
-/** Bring the window back and remove the tray icon. */
 void tray_restore(void);
 
-/** True while the window is hidden in the tray. */
 bool tray_is_minimized(void);
 
 /**

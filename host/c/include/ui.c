@@ -14,7 +14,6 @@
 #include "raylib.h"
 
 /* --------------------------------------------------------------- theme --- */
-/* Mirrors the dark palette in host/web/style.css. */
 
 #define COL(r, g, b, a) ((Clay_Color){ (float)(r), (float)(g), (float)(b), (float)(a) })
 
@@ -33,10 +32,8 @@ static const Clay_Color C_TRANSPARENT = COL(0, 0, 0, 0);
 
 enum { FONT_BODY = 0, FONT_MONO = 1, FONT_COUNT = 2 };
 
-/* Whether the hamburger dropdown is open. */
 static bool s_menu_open;
 
-/* Rename state: which fader is being renamed, and the text being typed. */
 static int  s_rename = -1;
 static char s_rename_buf[CONFIG_NAME_MAX];
 
@@ -62,11 +59,9 @@ static void ui_on_fader_change(int id, int value, void *user)
 
 static Font s_fonts[FONT_COUNT];
 
-/* Colour wheel texture, regenerated only when brightness changes. */
 static Texture2D s_wheel;
 static float     s_wheel_val = -1.0f;
 
-/* Which text field has keyboard focus, or NULL. */
 static char *s_focus;
 static size_t s_focus_cap;
 
@@ -198,7 +193,6 @@ static void ui_text_field(Clay_ElementId id, char *buffer, size_t cap,
             s_focus_cap = cap;
         }
 
-        /* Show a caret only while focused, without disturbing the buffer. */
         char *shown = s_text_slots[s_text_slot % TEXT_SLOTS];
         s_text_slot++;
         snprintf(shown, APP_CONFIG_MAX + 2, "%s%s", buffer,
@@ -214,7 +208,6 @@ static void ui_text_field(Clay_ElementId id, char *buffer, size_t cap,
     }
 }
 
-/* Feed raylib keyboard input into whichever field has focus. */
 static void ui_pump_text_input(void)
 {
     if (s_focus == NULL) {
@@ -311,7 +304,6 @@ static void ui_wheel_interact(app_t *app, Clay_BoundingBox box, bool *changed)
     float dy = m.y - cy;
     float dist = sqrtf(dx * dx + dy * dy);
 
-    /* Only start a drag inside the disc, but let it continue outside. */
     if (dist > radius && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
         return;
     }
@@ -440,7 +432,6 @@ static const char *const s_menu_items[MENU_ITEMS] = {
     "Save config", "Load config",
 };
 
-/* Panel hanging below the hamburger button. */
 static Rectangle ui_menu_rect(Clay_BoundingBox button)
 {
     return (Rectangle){
@@ -451,7 +442,6 @@ static Rectangle ui_menu_rect(Clay_BoundingBox button)
     };
 }
 
-/* Index of the item under the pointer, or -1. */
 static int ui_menu_hit(Rectangle panel)
 {
     Vector2 mouse = GetMousePosition();
@@ -511,7 +501,6 @@ static void ui_menu_save_config(app_t *app)
     char path[512];
 
     if (!filedialog_save("Save configuration", "config.json", path, sizeof(path))) {
-        /* Cancelled, or no chooser installed. */
         if (!filedialog_available()) {
             app_log(app, APP_LOG_ERROR,
                     "no file chooser available (install zenity or kdialog)");
@@ -566,7 +555,6 @@ static void ui_update_rename(app_t *app)
     }
 }
 
-/* Editor drawn over the fader being renamed. */
 static void ui_draw_rename(const app_t *app, Clay_BoundingBox box)
 {
     (void)app;
@@ -582,7 +570,6 @@ static void ui_draw_rename(const app_t *app, Clay_BoundingBox box)
     float width = fmaxf(extent.x + 20.0f, 150.0f);
     float height = 34.0f;
 
-    /* Centred on the fader, just above it, and kept on screen. */
     float x = box.x + box.width / 2.0f - width / 2.0f;
     float y = box.y - height - 8.0f;
 
@@ -755,7 +742,6 @@ int ui_run(app_t *app)
        multi-resolution .ico through the shell. */
     tray_init(GetWindowHandle(), "resources/icon.ico", "Custom USB Protocol");
 
-    /* Roboto if it is beside the executable, raylib's built-in font otherwise. */
     s_fonts[FONT_BODY] = LoadFontEx("resources/Roboto-Regular.ttf", 32, NULL, 0);
     s_fonts[FONT_MONO] = LoadFontEx("resources/RobotoMono-Medium.ttf", 32, NULL, 0);
     for (int i = 0; i < FONT_COUNT; i++) {
@@ -778,10 +764,8 @@ int ui_run(app_t *app)
     bool quit = false;
 
     while (!WindowShouldClose() && !quit) {
-        /* Drain the tray's own message queue and honour its Exit entry. */
         quit = tray_poll();
 
-        /* Minimising sends the window to the tray instead of the taskbar. */
         if (tray_available() && !tray_is_minimized() && IsWindowMinimized()) {
             tray_minimize();
         }
@@ -874,7 +858,6 @@ int ui_run(app_t *app)
                 continue;
             }
 
-            /* Right-click opens the rename editor for this fader. */
             if (IsMouseButtonPressed(MOUSE_BUTTON_RIGHT)) {
                 Vector2 m = GetMousePosition();
                 Clay_BoundingBox b = slot.boundingBox;
@@ -963,7 +946,6 @@ int ui_run(app_t *app)
                                                  .textColor = C_MUTED }));
                 }
 
-                /* Spacer pushes the controls to the right edge. */
                 CLAY_AUTO_ID({ .layout = { .sizing = { CLAY_SIZING_GROW(0) } } }) {}
 
                 CLAY_AUTO_ID({
@@ -995,7 +977,6 @@ int ui_run(app_t *app)
                     .childGap = 12,
                 },
             }) {
-                /* NeoPixel */
                 UI_CARD(CLAY_ID("LedCard")) {
                     ui_card_title("NEOPIXEL");
 
@@ -1088,7 +1069,6 @@ int ui_run(app_t *app)
                     }
                 }
 
-                /* Message + config */
                 CLAY_AUTO_ID({
                     .layout = {
                         .sizing = { CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0) },
@@ -1190,7 +1170,6 @@ int ui_run(app_t *app)
         ClearBackground((Color){ 0x14, 0x16, 0x1a, 255 });
         Clay_Raylib_Render(commands);
 
-        /* Overlays Clay cannot express: the wheel marker and the slider knob. */
         Clay_ElementData wheel_now = Clay_GetElementData(wheel_id);
         if (wheel_now.found) {
             ui_draw_wheel_marker(app, wheel_now.boundingBox);

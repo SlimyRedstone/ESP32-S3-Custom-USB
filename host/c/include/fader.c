@@ -74,7 +74,6 @@ static fader_metrics_t metrics_of(Clay_BoundingBox box)
     return m;
 }
 
-/* Draw text several times with sub-pixel offsets to imitate a bold face. */
 static void draw_bold_pro(Font font, const char *text, Vector2 position,
                           Vector2 origin, float rotation, float size, Color tint)
 {
@@ -94,7 +93,6 @@ static void draw_bold_pro(Font font, const char *text, Vector2 position,
 bool fader_interact(int id, Clay_BoundingBox box, int *value, int max,
                     fader_change_cb_t on_change, void *user)
 {
-    /* Button up ends any drag this fader owned. */
     if (!IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
         if (s_active == id) {
             s_active = FADER_NONE;

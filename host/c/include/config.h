@@ -26,7 +26,6 @@ typedef struct {
     char name[CONFIG_NAME_MAX];
 } config_slider_t;
 
-/** Default state of the traffic console. */
 #define CONFIG_DEBUG_DEFAULT true
 
 /**

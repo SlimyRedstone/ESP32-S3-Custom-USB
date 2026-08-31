@@ -34,7 +34,6 @@ bool filedialog_open(const char *title, char *out, size_t cap);
 bool filedialog_save(const char *title, const char *suggested,
                      char *out, size_t cap);
 
-/** True if a chooser is available at all. */
 bool filedialog_available(void);
 
 #endif /* FILEDIALOG_H */

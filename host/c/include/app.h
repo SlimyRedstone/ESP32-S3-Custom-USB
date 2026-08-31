@@ -96,10 +96,8 @@ void app_shutdown(app_t *a);
 bool app_connect(app_t *a);
 void app_disconnect(app_t *a);
 
-/** Drain anything waiting on the IN endpoint. Call once per frame. */
 void app_poll(app_t *a);
 
-/** Send a raw JSON document and log it. */
 void app_send_json(app_t *a, const char *json);
 
 void app_set_led(app_t *a);
@@ -107,35 +105,26 @@ void app_get(app_t *a, const char *what);
 void app_send_message(app_t *a);
 void app_set_config(app_t *a);
 
-/** Load config.json, falling back to the defaults when it is missing. */
 void app_config_load(app_t *a);
 
-/** Write config.json if anything has changed. */
 void app_config_save(app_t *a);
 
-/** Write the current configuration to an arbitrary path. */
 bool app_config_save_as(app_t *a, const char *path);
 
-/** Replace the configuration from an arbitrary path. */
 bool app_config_load_from(app_t *a, const char *path);
 
-/** Raise a notification for the UI to surface. */
 void app_notify(app_t *a, const char *text);
 
 /** Append one line to the log, printf style. */
 void app_log(app_t *a, app_log_kind_t kind, const char *fmt, ...);
 void app_log_clear(app_t *a);
 
-/** Oldest-first access to the log ring. */
 const app_log_entry_t *app_log_at(const app_t *a, int index);
 
-/** Current colour packed as 0xRRGGBB. */
 uint32_t app_rgb(const app_t *a);
 
-/** Adopt a packed colour, e.g. one reported by the device. */
 void app_set_rgb(app_t *a, uint32_t rgb);
 
-/** Refresh the hex text field from the current colour. */
 void app_sync_hex(app_t *a);
 
 void app_hsv_to_rgb(float h, float s, float v, uint8_t *r, uint8_t *g, uint8_t *b);

@@ -174,13 +174,11 @@ static int run_listener(usbdev_t *dev)
 
 int main(int argc, char **argv)
 {
-    /* Line buffering keeps output readable when piped into a file or tee. */
     setvbuf(stdout, NULL, _IOLBF, 0);
 
     /* Leave the interface claimed for no longer than one poll after ctrl-c. */
     install_signal_handlers();
 
-    /* No arguments: the graphical client, which manages its own connection. */
     if (argc == 1) {
         static app_t app;
         app_init(&app);

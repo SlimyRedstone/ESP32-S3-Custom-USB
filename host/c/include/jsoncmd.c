@@ -53,7 +53,6 @@ bool jsoncmd_append(char *out, size_t out_size, const char *raw)
     return true;
 }
 
-/* Start a fresh command, replacing whatever was in the buffer. */
 static bool begin(char *out, size_t out_size, const char *prefix)
 {
     size_t len = strlen(prefix);
@@ -133,8 +132,6 @@ bool jsoncmd_build(int argc, char **argv, char *out, size_t out_size)
     jsoncmd_usage(stderr);
     return false;
 }
-
-/* ------------------------------------------------------- reply readers --- */
 
 #define SCRATCH_MAX 600
 
