@@ -45,7 +45,6 @@ const ui = {
   sendMsg: el('send-msg'),
   log: el('log'),
   clearLog: el('clear-log'),
-  showHeartbeat: el('show-heartbeat'),
 };
 
 let device = null;
@@ -325,15 +324,6 @@ async function readLoop() {
 }
 
 function handlePacket(bytes) {
-  /* 0x5A followed by a little-endian uint32 counter. Still binary, not JSON. */
-  if (bytes[0] === 0x5A && bytes.length >= 5) {
-    if (ui.showHeartbeat.checked) {
-      const count = bytes[1] | (bytes[2] << 8) | (bytes[3] << 16) | (bytes[4] << 24);
-      log('rx', `heartbeat ${count >>> 0}`);
-    }
-    return;
-  }
-
   const text = new TextDecoder().decode(bytes);
 
   /* Replies are JSON; asynchronous events such as the button are plain text. */

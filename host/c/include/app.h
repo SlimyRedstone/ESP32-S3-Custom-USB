@@ -71,9 +71,7 @@ typedef struct {
     /* From the "debug" key. When false the traffic console is hidden. */
     bool debug;
 
-    bool show_heartbeats;
     bool live_send;
-    unsigned long heartbeats;
 
     /* Ring buffer; oldest entry is dropped once it fills. */
     app_log_entry_t log[APP_LOG_CAPACITY];

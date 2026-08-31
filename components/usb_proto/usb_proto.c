@@ -473,13 +473,10 @@ static void dispatch_task(void *arg)
     (void)arg;
 
     usb_packet_t pkt;
-    uint32_t heartbeat = 0;
 
     /* Static: too large for the task stack, and only this task touches it. */
     static char json_buf[JSON_BUF_MAX + 1];
     size_t json_len = 0;
-
-    TickType_t next_beat = xTaskGetTickCount() + pdMS_TO_TICKS(1000);
 
     /*
      * Everything that writes to the vendor IN endpoint funnels through this
@@ -547,21 +544,6 @@ static void dispatch_task(void *arg)
                 usb_proto_vendor_send(evt.data, evt.len);
                 ESP_LOGI(TAG, "event: %.*s", (int)evt.len, (const char *)evt.data);
             }
-        }
-
-        if (s_cfg.heartbeat && tud_vendor_mounted() &&
-            xTaskGetTickCount() >= next_beat) {
-            next_beat = xTaskGetTickCount() + pdMS_TO_TICKS(1000);
-
-            uint8_t beat[5] = {
-                0x5A,
-                (uint8_t)(heartbeat),
-                (uint8_t)(heartbeat >> 8),
-                (uint8_t)(heartbeat >> 16),
-                (uint8_t)(heartbeat >> 24),
-            };
-            heartbeat++;
-            usb_proto_vendor_send(beat, sizeof(beat));
         }
     }
 

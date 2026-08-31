@@ -24,8 +24,6 @@
  * handed to on_raw_packet, or answered with an error object if none is set.
  *
  * Wire protocol, device -> host, outside of replies:
- *   0x5A followed by a little-endian uint32 counter, once per second while idle
- *                  (when heartbeat is enabled).
  *   {"interrupt":{"gpio":0,"state":0,"message":"..."}}
  *                  a GPIO interrupt report, sent unprompted
  *   anything else  asynchronous events queued with usb_proto_send_event().
@@ -79,7 +77,6 @@ typedef struct {
     usb_proto_config_get_cb_t on_config_get;  /*!< NULL: {"get":"config"} errors */
     usb_proto_config_set_cb_t on_config_set;  /*!< NULL: config writes error     */
 
-    bool heartbeat;   /*!< Emit the 1 Hz counter packet while idle */
     bool cdc_echo;    /*!< Echo back whatever is typed at the CDC port */
 
     /*
@@ -114,7 +111,6 @@ typedef struct {
 } usb_proto_config_t;
 
 #define USB_PROTO_DEFAULT_CONFIG() ((usb_proto_config_t){ \
-    .heartbeat  = true,                                   \
     .cdc_echo   = true,                                   \
     .vid        = 0x303A,                                 \
     .pid        = 0x4001,                                 \

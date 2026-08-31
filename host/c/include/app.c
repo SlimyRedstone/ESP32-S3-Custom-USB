@@ -179,7 +179,6 @@ void app_init(app_t *a)
     a->hue = 0.0f;
     a->sat = 1.0f;
     a->val = 1.0f;
-    a->show_heartbeats = false;
     a->live_send = false;
     a->debug = CONFIG_DEBUG_DEFAULT;
 
@@ -254,17 +253,7 @@ void app_send_json(app_t *a, const char *json)
 
 static void app_handle_packet(app_t *a, const unsigned char *data, int len)
 {
-    unsigned long count;
-
     switch (proto_classify(data, len)) {
-    case PROTO_HEARTBEAT:
-        proto_heartbeat_count(data, len, &count);
-        a->heartbeats = count;
-        if (a->show_heartbeats) {
-            app_log(a, APP_LOG_RX, "heartbeat %lu", count);
-        }
-        return;
-
     case PROTO_INTERRUPT: {
         app_log(a, APP_LOG_EVENT, "<- %.*s", len, (const char *)data);
 

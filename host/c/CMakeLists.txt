@@ -15,6 +15,7 @@ add_executable(CustomUSBProtocol
     include/fader.c
     include/config.c
     include/filedialog.c
+    include/cli.c
 )
 
 # Clay is a single-header library; exactly one translation unit may define its

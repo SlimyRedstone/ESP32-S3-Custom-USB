@@ -1121,9 +1121,6 @@ int ui_run(app_t *app)
 
                     CLAY_AUTO_ID({ .layout = { .sizing = { CLAY_SIZING_GROW(0) } } }) {}
 
-                    ui_checkbox(CLAY_ID("ShowHb"), "Show heartbeats",
-                                &app->show_heartbeats);
-
                     if (ui_button(CLAY_ID("ClearLog"), "Clear", false, true, false)) {
                         app_log_clear(app);
                     }

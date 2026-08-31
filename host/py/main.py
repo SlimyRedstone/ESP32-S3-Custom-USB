@@ -8,7 +8,7 @@ Windows:   the device binds WinUSB automatically via its MS OS 2.0 descriptors,
 Linux:     add a udev rule for 303a:4001, or run as root.
 
 Usage:
-    python vendor_test.py            listen for heartbeats and events
+    python vendor_test.py            listen for events
     python vendor_test.py '<json>'   send one JSON command, print the reply
 
 The wire protocol is JSON:
@@ -97,7 +97,7 @@ def main():
     usb.util.claim_interface(dev, itf_num)
 
     try:
-        # Drain any queued heartbeat packets first.
+        # Drain anything already queued.
         while True:
             try:
                 ep_in.read(READ_SIZE, timeout=100)
@@ -123,11 +123,6 @@ def main():
         assert reply[0] == 0xA5, f"unexpected tag 0x{reply[0]:02X}"
         assert reply[1:] == payload, "echo payload mismatch"
         print("echo OK")
-
-        # Unsolicited IN traffic: 0x5A + little-endian uint32 counter, 1 Hz.
-        # print("listening for heartbeats (3s)...")
-        # deadline = time.time() + 3.0
-        # while time.time() < deadline:
         while True:
             try:
                 pkt = bytes(ep_in.read(READ_SIZE, timeout=1500))
@@ -135,19 +130,15 @@ def main():
                 continue
             if not pkt:
                 continue
-            if pkt[0] == 0x5A and len(pkt) >= 5:
-                count = int.from_bytes(pkt[1:5], "little")
-                print(f"heartbeat {count}")
+
+            text = pkt.decode("ascii", "replace")
+            if text.startswith('{"interrupt"'):
+                kind = "interrupt"
+            elif text.startswith("{"):
+                kind = "reply"
             else:
-                text = pkt.decode("ascii", "replace")
-                # An interrupt report is unprompted, so it is not a reply.
-                if text.startswith('{"interrupt"'):
-                    kind = "interrupt"
-                elif text.startswith("{"):
-                    kind = "reply"
-                else:
-                    kind = "event"
-                print(f"{kind}: {text}")
+                kind = "event"
+            print(f"{kind}: {text}")
     finally:
         usb.util.release_interface(dev, itf_num)
         usb.util.dispose_resources(dev)

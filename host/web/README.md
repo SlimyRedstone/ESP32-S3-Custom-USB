@@ -36,7 +36,6 @@ bounded by its 512-byte JSON buffer rather than by the endpoint size.
 - `{"led":"ABCDEF"}` from a get — the wheel snaps to the reported colour
 - `{"config":{...}}` from a get — fills the config editor
 - `{"interrupt":{"gpio":0,"state":0,"message":"..."}}` when GPIO0 is pressed
-- Heartbeat counters, hidden by default — tick **Show heartbeats**
 
 ## Notes
 
