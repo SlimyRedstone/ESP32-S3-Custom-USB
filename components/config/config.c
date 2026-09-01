@@ -34,6 +34,13 @@ static const uint32_t s_led_defaults[LED_STATE_MAX] = {
 static uint32_t s_led_colors[LED_STATE_MAX];
 static bool     s_mounted;
 
+/*
+ * Slider positions held in RAM only. They track what the host last sent so the
+ * device can answer for them; persisting them would mean rewriting the file on
+ * every drag.
+ */
+static int s_sliders[CONFIG_SLIDER_COUNT];
+
 /* ------------------------------------------------------------- helpers -- */
 
 /* Accepts "RRGGBB" and "#RRGGBB". Returns false on anything else. */
@@ -316,6 +323,25 @@ esp_err_t config_set_led_color(config_led_state_t state, uint32_t rgb)
     }
     s_led_colors[state] = rgb & 0xFFFFFF;
     return ESP_OK;
+}
+
+esp_err_t config_set_slider(int id, int value)
+{
+    if (id < 0 || id >= CONFIG_SLIDER_COUNT) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    s_sliders[id] = value;
+    ESP_LOGI(TAG, "slider %d = %d", id, value);
+    return ESP_OK;
+}
+
+int config_get_slider(int id)
+{
+    if (id < 0 || id >= CONFIG_SLIDER_COUNT) {
+        return 0;
+    }
+    return s_sliders[id];
 }
 
 const char *config_file_path(void)

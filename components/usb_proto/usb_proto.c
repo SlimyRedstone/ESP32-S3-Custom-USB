@@ -170,6 +170,31 @@ void usb_proto_send_interrupt_cb(int gpio, int level, void *message)
     cJSON_free(text);
 }
 
+esp_err_t usb_proto_send_slider(int id, int value)
+{
+    char json[96];
+    int n = snprintf(json, sizeof(json),
+                     "{\"set\":{\"slider\":{\"id\":%d,\"value\":%d}}}",
+                     id, value);
+
+    if (n < 0 || n >= (int)sizeof(json)) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+    return usb_proto_send_event(json, (size_t)n);
+}
+
+esp_err_t usb_proto_request_slider(int id)
+{
+    char json[64];
+    int n = snprintf(json, sizeof(json),
+                     "{\"get\":{\"slider\":{\"id\":%d}}}", id);
+
+    if (n < 0 || n >= (int)sizeof(json)) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+    return usb_proto_send_event(json, (size_t)n);
+}
+
 /*
  * Host -> device. Runs on the TinyUSB task, so hand off and return fast.
  *
@@ -297,6 +322,11 @@ static void reply_error(const char *message)
 
 static bool apply_set_led(const cJSON *led)
 {
+    if (!cJSON_IsString(led)) {
+        reply_error("led must be a string");
+        return false;
+    }
+
     uint32_t rgb;
     if (!parse_hex6(led->valuestring, &rgb)) {
         reply_error("led must be RRGGBB hex");
@@ -323,6 +353,11 @@ static bool apply_set_led(const cJSON *led)
 
 static bool apply_set_message(const cJSON *message)
 {
+    if (!cJSON_IsString(message)) {
+        reply_error("message must be a string");
+        return false;
+    }
+
     const char *text = message->valuestring;
     size_t len = strlen(text);
 
@@ -338,6 +373,10 @@ static bool apply_set_message(const cJSON *message)
 
 static bool apply_set_config(const cJSON *config)
 {
+    if (!cJSON_IsObject(config)) {
+        reply_error("config must be an object");
+        return false;
+    }
     if (s_cfg.on_config_set == NULL) {
         reply_error("no config handler");
         return false;
@@ -360,25 +399,113 @@ static bool apply_set_config(const cJSON *config)
     return true;
 }
 
+static bool apply_set_slider(const cJSON *slider)
+{
+    if (!cJSON_IsObject(slider)) {
+        reply_error("slider must be an object");
+        return false;
+    }
+
+    const cJSON *id = cJSON_GetObjectItemCaseSensitive(slider, "id");
+    const cJSON *value = cJSON_GetObjectItemCaseSensitive(slider, "value");
+
+    if (!cJSON_IsNumber(id) || !cJSON_IsNumber(value)) {
+        reply_error("slider needs numeric id and value");
+        return false;
+    }
+    if (s_cfg.on_slider_set == NULL) {
+        reply_error("no slider handler");
+        return false;
+    }
+
+    esp_err_t err = s_cfg.on_slider_set(id->valueint, value->valueint);
+    ESP_LOGI(TAG, "set slider %d -> %d (%s)",
+             id->valueint, value->valueint, esp_err_to_name(err));
+
+    if (err != ESP_OK) {
+        reply_error(esp_err_to_name(err));
+        return false;
+    }
+    return true;
+}
+
+/* Writes the JSON value for a get, which the dispatcher wraps in {"key":...}. */
+static bool read_led(char *out, size_t out_size)
+{
+    if (s_cfg.on_led_query == NULL) {
+        reply_error("no led source");
+        return false;
+    }
+
+    snprintf(out, out_size, "\"%06X\"",
+             (unsigned)(s_cfg.on_led_query() & 0xFFFFFF));
+    return true;
+}
+
+static bool read_config(char *out, size_t out_size)
+{
+    if (s_cfg.on_config_get == NULL) {
+        reply_error("no config source");
+        return false;
+    }
+
+    char *text = s_cfg.on_config_get();
+    if (text == NULL) {
+        reply_error("config unavailable");
+        return false;
+    }
+
+    int n = snprintf(out, out_size, "%s", text);
+    free(text);
+
+    if (n < 0 || n >= (int)out_size) {
+        reply_error("config too large");
+        return false;
+    }
+    return true;
+}
+
+/*
+ * The command table. Adding a command means adding one row and its handler;
+ * nothing else in the dispatch changes. A NULL entry means that direction is
+ * unsupported for the key.
+ */
+typedef bool (*set_fn_t)(const cJSON *value);
+typedef bool (*get_fn_t)(char *out, size_t out_size);
+
+typedef struct {
+    const char *key;
+    set_fn_t    set;
+    get_fn_t    get;
+} command_t;
+
+static const command_t COMMANDS[] = {
+    { "led",     apply_set_led,     read_led    },
+    { "message", apply_set_message, NULL        },
+    { "config",  apply_set_config,  read_config },
+    { "slider",  apply_set_slider,  NULL        },
+};
+
+#define COMMAND_COUNT (sizeof(COMMANDS) / sizeof(COMMANDS[0]))
+
 static void handle_set(const cJSON *set)
 {
     int applied = 0;
 
-    const cJSON *led = cJSON_GetObjectItemCaseSensitive(set, "led");
-    if (cJSON_IsString(led)) {
-        if (!apply_set_led(led)) return;
-        applied++;
-    }
+    for (size_t i = 0; i < COMMAND_COUNT; i++) {
+        if (COMMANDS[i].set == NULL) {
+            continue;
+        }
 
-    const cJSON *message = cJSON_GetObjectItemCaseSensitive(set, "message");
-    if (cJSON_IsString(message)) {
-        if (!apply_set_message(message)) return;
-        applied++;
-    }
+        const cJSON *value = cJSON_GetObjectItemCaseSensitive(set, COMMANDS[i].key);
+        if (value == NULL) {
+            continue;
+        }
 
-    const cJSON *config = cJSON_GetObjectItemCaseSensitive(set, "config");
-    if (cJSON_IsObject(config)) {
-        if (!apply_set_config(config)) return;
+        /* The handler has already reported why it refused. */
+        if (!COMMANDS[i].set(value)) {
+            return;
+        }
         applied++;
     }
 
@@ -391,38 +518,23 @@ static void handle_set(const cJSON *set)
 
 static void handle_get(const char *what)
 {
-    char buf[REPLY_BUF_MAX];
-
-    if (strcmp(what, "led") == 0) {
-        if (s_cfg.on_led_query == NULL) {
-            reply_error("no led source");
-            return;
+    for (size_t i = 0; i < COMMAND_COUNT; i++) {
+        if (COMMANDS[i].get == NULL || strcmp(what, COMMANDS[i].key) != 0) {
+            continue;
         }
-        snprintf(buf, sizeof(buf), "{\"led\":\"%06X\"}",
-                 (unsigned)(s_cfg.on_led_query() & 0xFFFFFF));
-        reply(buf);
-        return;
-    }
 
-    if (strcmp(what, "config") == 0) {
-        if (s_cfg.on_config_get == NULL) {
-            reply_error("no config source");
+        char value[REPLY_BUF_MAX];
+        if (!COMMANDS[i].get(value, sizeof(value))) {
             return;
         }
 
-        char *text = s_cfg.on_config_get();
-        if (text == NULL) {
-            reply_error("config unavailable");
-            return;
-        }
-
-        int n = snprintf(buf, sizeof(buf), "{\"config\":%s}", text);
-        free(text);
-
+        char buf[REPLY_BUF_MAX];
+        int n = snprintf(buf, sizeof(buf), "{\"%s\":%s}", COMMANDS[i].key, value);
         if (n < 0 || n >= (int)sizeof(buf)) {
-            reply_error("config too large");
+            reply_error("reply too large");
             return;
         }
+
         reply(buf);
         return;
     }

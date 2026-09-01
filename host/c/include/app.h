@@ -71,6 +71,20 @@ typedef struct {
     /* From the "debug" key. When false the traffic console is hidden. */
     bool debug;
 
+    /*
+     * Rises each time the device reports a slider move. The UI watches it and
+     * locks its own sliders for a moment, so a fader being moved on the device
+     * is not fought by the pointer.
+     */
+    unsigned long slider_extern_seq;
+
+    /*
+     * Set when the user moves a fader, cleared once the device has been told.
+     * Reported as "update" so the device knows whether the value it just asked
+     * for is newer than the one it holds.
+     */
+    bool slider_pending[APP_FADER_COUNT];
+
     bool live_send;
 
     /* Ring buffer; oldest entry is dropped once it fills. */
@@ -99,6 +113,21 @@ void app_poll(app_t *a);
 void app_send_json(app_t *a, const char *json);
 
 void app_set_led(app_t *a);
+
+/**
+ * Send {"set":{"slider":{"id":N,"value":V}}}.
+ *
+ * @param id    Slider index.
+ * @param value New position.
+ */
+void app_send_slider(app_t *a, int id, int value);
+
+/**
+ * Answer {"get":{"slider":{"id":N}}} with the slider's full state.
+ *
+ * @param id Slider index; ignored if out of range.
+ */
+void app_reply_slider(app_t *a, int id);
 void app_get(app_t *a, const char *what);
 void app_send_message(app_t *a);
 void app_set_config(app_t *a);

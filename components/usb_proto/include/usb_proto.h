@@ -12,8 +12,13 @@
  *   {"set":{"led":"ABCDEF"}}                 dispatched to on_led_command
  *   {"set":{"message":"This is a test"}}     dispatched to on_text_message
  *   {"set":{"config":{ ... }}}               dispatched to on_config_set
+ *   {"set":{"slider":{"id":0,"value":1024}}} dispatched to on_slider_set
  *   {"get":"led"}          ->  {"led":"ABCDEF"}
  *   {"get":"config"}       ->  {"config":{ ... }}
+ *
+ * A document without a root "set" or "get" is rejected outright. Commands are
+ * held in one table in usb_proto.c, so a new one is a single row plus its
+ * handler.
  *
  * A "set" object may carry several keys at once; all recognised ones are
  * applied. Every "set" is answered with {"ok":true} or, on failure,
@@ -66,6 +71,14 @@ typedef char *(*usb_proto_config_get_cb_t)(void);
 /** Applies a JSON object from {"set":{"config":{...}}}. */
 typedef esp_err_t (*usb_proto_config_set_cb_t)(const char *json);
 
+/**
+ * Applies {"set":{"slider":{"id":N,"value":V}}}.
+ *
+ * @param id    Slider index as sent by the host.
+ * @param value New position.
+ */
+typedef esp_err_t (*usb_proto_slider_set_cb_t)(int id, int value);
+
 typedef struct {
     /* Command handlers. A NULL handler falls back to the built-in behaviour
        described beside each field. */
@@ -76,6 +89,7 @@ typedef struct {
     usb_proto_led_query_cb_t  on_led_query;   /*!< NULL: {"get":"led"} errors    */
     usb_proto_config_get_cb_t on_config_get;  /*!< NULL: {"get":"config"} errors */
     usb_proto_config_set_cb_t on_config_set;  /*!< NULL: config writes error     */
+    usb_proto_slider_set_cb_t on_slider_set;  /*!< NULL: slider writes error     */
 
     bool cdc_echo;    /*!< Echo back whatever is typed at the CDC port */
 
@@ -176,6 +190,28 @@ esp_err_t usb_proto_send_event(const void *data, size_t len);
  * @endcode
  */
 void usb_proto_send_interrupt_cb(int gpio, int level, void *message);
+
+/**
+ * @brief Report a slider that moved on the device.
+ *
+ * Queues {"set":{"slider":{"id":N,"value":V}}}, the same form the host sends,
+ * so both directions share one message.
+ *
+ * @param id    Slider index.
+ * @param value New position.
+ */
+esp_err_t usb_proto_send_slider(int id, int value);
+
+/**
+ * @brief Ask the host for a slider's state.
+ *
+ * Queues {"get":{"slider":{"id":N}}}. The host answers with
+ * {"set":{"slider":{"id":N,"value":V,"name":"...","update":B}}}, where "update"
+ * says whether its value is newer than the one held here.
+ *
+ * @param id Slider index.
+ */
+esp_err_t usb_proto_request_slider(int id);
 
 /**
  * @brief Write text to the CDC serial port.

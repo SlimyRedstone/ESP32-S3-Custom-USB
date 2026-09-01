@@ -49,8 +49,9 @@ static void ui_on_fader_change(int id, int value, void *user)
         return;
     }
 
-    app_log(app, APP_LOG_EVENT, "%s = %d", app->sliders[id].name, value);
     app->config_dirty = true;
+    app->slider_pending[id] = true;
+    app_send_slider(app, id, value);
 }
 
 #define UI_PI        3.14159265358979323846f
@@ -761,6 +762,13 @@ int ui_run(app_t *app)
     double last_live_send = 0.0;
     double last_config_save = 0.0;
 
+    /*
+     * While the device is driving a slider, the pointer is locked out so the
+     * two do not fight over the same value.
+     */
+    unsigned long slider_extern_seen = 0;
+    double slider_locked_until = 0.0;
+
     bool quit = false;
 
     while (!WindowShouldClose() && !quit) {
@@ -852,7 +860,13 @@ int ui_run(app_t *app)
         if (wheel_data.found && !menu_blocks) {
             ui_wheel_interact(app, wheel_data.boundingBox, &colour_changed);
         }
-        for (int i = 0; i < APP_FADER_COUNT && !menu_blocks; i++) {
+        if (app->slider_extern_seq != slider_extern_seen) {
+            slider_extern_seen = app->slider_extern_seq;
+            slider_locked_until = GetTime() + 0.5;
+        }
+        bool sliders_locked = GetTime() < slider_locked_until;
+
+        for (int i = 0; i < APP_FADER_COUNT && !menu_blocks && !sliders_locked; i++) {
             Clay_ElementData slot = Clay_GetElementData(CLAY_IDI("Fader", i));
             if (!slot.found) {
                 continue;

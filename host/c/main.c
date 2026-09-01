@@ -31,9 +31,9 @@ int main(int argc, char **argv)
     setvbuf(stdout, NULL, _IOLBF, 0);
     cli_install_signals();
 
-    if (argc > 1) {
+    /* if (argc > 1) {
         return cli_run(argc, argv);
-    }
+    } */
 
     static app_t app;
     app_init(&app);

@@ -277,6 +277,51 @@ static void app_handle_packet(app_t *a, const unsigned char *data, int len)
 
     app_log(a, APP_LOG_RX, "<- %.*s", len, (const char *)data);
 
+    /*
+     * {"get":{"slider":{"id":N}}} -- the device is asking for a slider's state.
+     * Checked first because a get and a set both carry a "slider" object, and
+     * the set branch below would otherwise claim it.
+     *
+     * The object is copied out: jsoncmd_find_object returns a static buffer, so
+     * looking inside it with the same helper would clobber the outer result.
+     */
+    const char *get_obj = jsoncmd_find_object(data, len, "get");
+    if (get_obj) {
+        char request[160];
+        snprintf(request, sizeof(request), "%s", get_obj);
+
+        const char *slider_at = strstr(request, "\"slider\"");
+        const char *id_at = slider_at ? strstr(slider_at, "\"id\"") : NULL;
+        const char *colon = id_at ? strchr(id_at, ':') : NULL;
+
+        if (colon) {
+            app_reply_slider(a, atoi(colon + 1));
+        } else {
+            app_log(a, APP_LOG_ERROR, "unsupported get: %.*s", len,
+                    (const char *)data);
+        }
+        return;
+    }
+
+    /* {"set":{"slider":{"id":N,"value":V}}} -- the device moved one of its own
+       sliders, so mirror it and let the UI lock the pointer out briefly. */
+    const char *slider = jsoncmd_find_object(data, len, "slider");
+    if (slider) {
+        /* Scanned rather than pattern-matched, so whitespace and key order in
+           the incoming object do not matter. */
+        const char *id_at = strstr(slider, "\"id\"");
+        const char *value_at = strstr(slider, "\"value\"");
+        int id = id_at ? atoi(strchr(id_at, ':') + 1) : -1;
+        int value = value_at ? atoi(strchr(value_at, ':') + 1) : 0;
+
+        if (id_at && value_at && id >= 0 && id < APP_FADER_COUNT) {
+            a->sliders[id].value = value;
+            a->slider_extern_seq++;
+            a->config_dirty = true;
+        }
+        return;
+    }
+
     const char *led = jsoncmd_find_string(data, len, "led");
     if (led) {
         unsigned rgb;
@@ -331,6 +376,39 @@ void app_set_led(app_t *a)
     snprintf(json, sizeof(json), "{\"set\":{\"led\":\"%06X\"}}",
              (unsigned)app_rgb(a));
     app_send_json(a, json);
+}
+
+void app_send_slider(app_t *a, int id, int value)
+{
+    char json[96];
+    snprintf(json, sizeof(json),
+             "{\"set\":{\"slider\":{\"id\":%d,\"value\":%d}}}", id, value);
+    app_send_json(a, json);
+}
+
+void app_reply_slider(app_t *a, int id)
+{
+    if (id < 0 || id >= APP_FADER_COUNT) {
+        app_log(a, APP_LOG_ERROR, "slider %d out of range", id);
+        return;
+    }
+
+    char json[APP_MESSAGE_MAX + 96];
+    snprintf(json, sizeof(json),
+             "{\"set\":{\"slider\":{\"id\":%d,\"value\":%d,\"name\":\"",
+             id, a->sliders[id].value);
+
+    if (!jsoncmd_escape_append(json, sizeof(json), a->sliders[id].name) ||
+        !jsoncmd_append(json, sizeof(json), "\",\"update\":") ||
+        !jsoncmd_append(json, sizeof(json),
+                        a->slider_pending[id] ? "true" : "false") ||
+        !jsoncmd_append(json, sizeof(json), "}}}")) {
+        app_log(a, APP_LOG_ERROR, "slider reply too long");
+        return;
+    }
+
+    app_send_json(a, json);
+    a->slider_pending[id] = false;
 }
 
 void app_get(app_t *a, const char *what)

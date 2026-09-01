@@ -26,6 +26,7 @@ void app_main(void) {
     usb_cfg.on_led_query   = neopixel_get_rgb;
     usb_cfg.on_config_get  = config_to_json;
     usb_cfg.on_config_set  = config_from_json;
+    usb_cfg.on_slider_set  = config_set_slider;
     usb_cfg.product        = "S3 Custom USB Dongle";
     usb_cfg.status_led     = true;
     usb_cfg.led_connected  = config_led_color(LED_STATE_CONNECTED);

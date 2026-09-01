@@ -37,6 +37,25 @@ typedef enum {
     LED_STATE_MAX,
 } config_led_state_t;
 
+/** Number of sliders tracked on the device. */
+#define CONFIG_SLIDER_COUNT 4
+
+/**
+ * @brief Record a slider position received from the host.
+ *
+ * Signature matches usb_proto_slider_set_cb_t, so it can be wired straight to
+ * usb_proto_config_t::on_slider_set.
+ *
+ * @param id    Slider index, 0..CONFIG_SLIDER_COUNT-1.
+ * @param value New position.
+ */
+esp_err_t config_set_slider(int id, int value);
+
+/**
+ * @brief Last recorded position of a slider, or 0 for an unknown index.
+ */
+int config_get_slider(int id);
+
 /**
  * @brief Mount the SPIFFS volume and load the configuration.
  *
