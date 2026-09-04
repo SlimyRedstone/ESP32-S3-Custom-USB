@@ -213,6 +213,38 @@ bool filedialog_open(const char *title, char *out, size_t cap)
     return false;
 }
 
+bool filedialog_open_program(const char *title, char *out, size_t cap)
+{
+    if (cap == 0) {
+        return false;
+    }
+    out[0] = '\0';
+
+    char command[640];
+
+    /* Executables carry no extension here, so the chooser opens where most of
+       them live instead of filtering by name. */
+    const char *start = "/usr/bin";
+
+    if (have("zenity")) {
+        snprintf(command, sizeof(command),
+                 "zenity --file-selection --title='%s' --filename='%s/' "
+                 "2>/dev/null",
+                 title, start);
+        return run_chooser(command, out, cap);
+    }
+
+    if (have("kdialog")) {
+        snprintf(command, sizeof(command),
+                 "kdialog --getopenfilename '%s' --title '%s' 2>/dev/null",
+                 start, title);
+        return run_chooser(command, out, cap);
+    }
+
+    fprintf(stderr, "no file chooser found; install zenity or kdialog\n");
+    return false;
+}
+
 bool filedialog_save(const char *title, const char *suggested,
                      char *out, size_t cap)
 {
