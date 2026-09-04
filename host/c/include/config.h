@@ -1,7 +1,11 @@
 /*
  * Persistence for the fader strip, stored beside the executable as config.json:
  *
- *   {"debug":true,"sliders":[{"id":0,"value":2024,"name":"Main Audio"}, ... ]}
+ *   {"debug":true,"sliders":[
+ *     {"id":0,"value":2024,"name":"Main Audio",
+ *      "apps":[{"path":"C:/.../Discord.exe","name":"Discord.exe"}]},
+ *     ...
+ *   ]}
  *
  * "debug" controls whether the interface shows its traffic console.
  *
@@ -19,12 +23,36 @@
 #include <stdbool.h>
 
 #define CONFIG_NAME_MAX 32
+#define CONFIG_PATH_MAX 260
+#define CONFIG_APPS_MAX 16
+
+/* One executable whose volume a slider controls. */
+typedef struct {
+    char path[CONFIG_PATH_MAX];   /*!< as chosen in the file dialog */
+    char name[CONFIG_NAME_MAX];   /*!< basename, what the mixer matches on */
+} config_app_t;
 
 typedef struct {
     int  id;
     int  value;
     char name[CONFIG_NAME_MAX];
+
+    config_app_t apps[CONFIG_APPS_MAX];
+    int          app_count;
 } config_slider_t;
+
+/**
+ * Append an app to a slider, ignoring duplicates by path.
+ *
+ * @return false if the slider is full or the path is already present.
+ */
+bool config_add_app(config_slider_t *slider, const char *path);
+
+/** Remove the app at @p index, closing the gap. */
+void config_remove_app(config_slider_t *slider, int index);
+
+/** Basename of @p path, without directories. */
+const char *config_basename(const char *path);
 
 #define CONFIG_DEBUG_DEFAULT true
 

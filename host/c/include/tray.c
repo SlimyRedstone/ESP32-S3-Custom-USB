@@ -12,6 +12,8 @@
 #define MENU_SHOW      100
 #define MENU_QUIT      101
 
+#define TRAY_TITLE     "IOMeeter"
+
 static HWND  s_app_window;      /* raylib's window */
 static HWND  s_helper;          /* message-only window that owns the tray icon */
 static HICON s_icon;
@@ -20,6 +22,9 @@ static NOTIFYICONDATAA s_nid;
 static bool s_ready;
 static bool s_minimized;
 static bool s_quit_requested;
+
+/* GLFW's own window procedure, chained to for everything we do not handle. */
+static WNDPROC s_original_proc;
 
 /*
  * The tray icon needs a window to deliver its notifications to, and raylib's
@@ -51,9 +56,9 @@ static LRESULT CALLBACK tray_wndproc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM 
         if (menu == NULL) {
             break;
         }
-        AppendMenuA(menu, MF_STRING, MENU_SHOW, "Show");
+        AppendMenuA(menu, MF_STRING, MENU_SHOW, "Show " TRAY_TITLE);
         AppendMenuA(menu, MF_SEPARATOR, 0, NULL);
-        AppendMenuA(menu, MF_STRING, MENU_QUIT, "Exit");
+        AppendMenuA(menu, MF_STRING, MENU_QUIT, "Close " TRAY_TITLE);
 
         POINT at;
         GetCursorPos(&at);
@@ -70,6 +75,23 @@ static LRESULT CALLBACK tray_wndproc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM 
         break;
     }
     return 0;
+}
+
+/*
+ * The close button must not end the program: it hides to the notification area
+ * instead, and only the tray menu really quits.
+ *
+ * raylib offers no way to clear the close flag once GLFW has set it, so WM_CLOSE
+ * is intercepted before GLFW ever sees it.
+ */
+static LRESULT CALLBACK app_window_proc(HWND hwnd, UINT msg, WPARAM wparam,
+                                        LPARAM lparam)
+{
+    if (msg == WM_CLOSE && s_ready) {
+        tray_minimize();
+        return 0;
+    }
+    return CallWindowProcA(s_original_proc, hwnd, msg, wparam, lparam);
 }
 
 bool tray_init(void *window_handle, const char *icon_path, const char *tooltip)
@@ -95,7 +117,7 @@ bool tray_init(void *window_handle, const char *icon_path, const char *tooltip)
     wc.cbSize = sizeof(wc);
     wc.lpfnWndProc = tray_wndproc;
     wc.hInstance = GetModuleHandleA(NULL);
-    wc.lpszClassName = "CustomUSBProtocolTray";
+    wc.lpszClassName = "IOMeeterTray";
 
     if (RegisterClassExA(&wc) == 0 && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) {
         return false;
@@ -116,15 +138,32 @@ bool tray_init(void *window_handle, const char *icon_path, const char *tooltip)
     s_nid.hIcon = s_icon ? s_icon : LoadIconA(NULL, IDI_APPLICATION);
     snprintf(s_nid.szTip, sizeof(s_nid.szTip), "%s", tooltip ? tooltip : "");
 
+    if (!Shell_NotifyIconA(NIM_ADD, &s_nid)) {
+        DestroyWindow(s_helper);
+        s_helper = NULL;
+        return false;
+    }
+
+    if (s_app_window) {
+        s_original_proc = (WNDPROC)SetWindowLongPtrA(s_app_window, GWLP_WNDPROC,
+                                                     (LONG_PTR)app_window_proc);
+    }
+
     s_ready = true;
     return true;
 }
 
 void tray_shutdown(void)
 {
-    if (s_minimized) {
-        tray_restore();
+    if (s_app_window && s_original_proc) {
+        SetWindowLongPtrA(s_app_window, GWLP_WNDPROC, (LONG_PTR)s_original_proc);
+        s_original_proc = NULL;
     }
+    if (s_ready) {
+        Shell_NotifyIconA(NIM_DELETE, &s_nid);
+    }
+    s_minimized = false;
+
     if (s_helper) {
         DestroyWindow(s_helper);
         s_helper = NULL;
@@ -142,10 +181,10 @@ void tray_minimize(void)
     if (!s_ready || s_minimized) {
         return;
     }
-    if (Shell_NotifyIconA(NIM_ADD, &s_nid)) {
-        ShowWindow(s_app_window, SW_HIDE);
-        s_minimized = true;
-    }
+
+    /* The icon is already registered, so this only hides the window. */
+    ShowWindow(s_app_window, SW_HIDE);
+    s_minimized = true;
 }
 
 void tray_restore(void)
@@ -153,7 +192,6 @@ void tray_restore(void)
     if (!s_minimized) {
         return;
     }
-    Shell_NotifyIconA(NIM_DELETE, &s_nid);
     s_minimized = false;
 
     ShowWindow(s_app_window, SW_SHOW);

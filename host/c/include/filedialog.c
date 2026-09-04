@@ -3,6 +3,21 @@
 #include <stdio.h>
 #include <string.h>
 
+/* Strip the last path component in place, leaving the directory. */
+static void keep_directory(char *path)
+{
+    char *cut = NULL;
+
+    for (char *p = path; *p; p++) {
+        if (*p == '/' || *p == 0x5C) {   /* forward slash or backslash */
+            cut = p;
+        }
+    }
+    if (cut) {
+        *cut = 0;
+    }
+}
+
 #ifdef _WIN32
 
 #include <windows.h>
@@ -15,6 +30,23 @@
 static const char FILTER[] =
     "JSON files\0*.json\0"
     "All files\0*.*\0";
+
+static const char PROGRAM_FILTER[] =
+    "Programs\0*.exe;*.com;*.bat\0"
+    "All files\0*.*\0";
+
+/* Directory holding the executable, so the dialogs start beside config.json
+   rather than wherever the shell last left off. */
+static bool program_directory(char *out, size_t cap)
+{
+    DWORD n = GetModuleFileNameA(NULL, out, (DWORD)cap);
+    if (n == 0 || n >= cap) {
+        out[0] = 0;
+        return false;
+    }
+    keep_directory(out);
+    return out[0] != 0;
+}
 
 static void common_fields(OPENFILENAMEA *ofn, const char *title,
                           char *out, size_t cap)
@@ -44,8 +76,12 @@ bool filedialog_open(const char *title, char *out, size_t cap)
     }
     out[0] = '\0';
 
+    char start[MAX_PATH];
     OPENFILENAMEA ofn;
     common_fields(&ofn, title, out, cap);
+    if (program_directory(start, sizeof(start))) {
+        ofn.lpstrInitialDir = start;
+    }
     ofn.Flags |= OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST;
 
     return GetOpenFileNameA(&ofn) ? true : false;
@@ -59,11 +95,31 @@ bool filedialog_save(const char *title, const char *suggested,
     }
     snprintf(out, cap, "%s", suggested ? suggested : "");
 
+    char start[MAX_PATH];
     OPENFILENAMEA ofn;
     common_fields(&ofn, title, out, cap);
+    if (program_directory(start, sizeof(start))) {
+        ofn.lpstrInitialDir = start;
+    }
     ofn.Flags |= OFN_OVERWRITEPROMPT;
 
     return GetSaveFileNameA(&ofn) ? true : false;
+}
+
+bool filedialog_open_program(const char *title, char *out, size_t cap)
+{
+    if (cap == 0) {
+        return false;
+    }
+    out[0] = 0;
+
+    OPENFILENAMEA ofn;
+    common_fields(&ofn, title, out, cap);
+    ofn.lpstrFilter = PROGRAM_FILTER;
+    ofn.lpstrDefExt = "exe";
+    ofn.Flags |= OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST;
+
+    return GetOpenFileNameA(&ofn) ? true : false;
 }
 
 bool filedialog_available(void)
@@ -74,6 +130,21 @@ bool filedialog_available(void)
 #else /* !_WIN32 */
 
 #include <stdlib.h>
+#include <unistd.h>
+
+/* Directory holding the executable, so the dialogs start beside config.json
+   rather than in the working directory. */
+static bool program_directory(char *out, size_t cap)
+{
+    ssize_t n = readlink("/proc/self/exe", out, cap - 1);
+    if (n <= 0) {
+        out[0] = 0;
+        return false;
+    }
+    out[n] = 0;
+    keep_directory(out);
+    return out[0] != 0;
+}
 
 /* Ask the shell whether a chooser exists, quietly. */
 static bool have(const char *tool)
@@ -115,20 +186,26 @@ bool filedialog_open(const char *title, char *out, size_t cap)
     }
     out[0] = '\0';
 
-    char command[512];
+    char command[640];
+    char start[512];
+
+    if (!program_directory(start, sizeof(start))) {
+        snprintf(start, sizeof(start), ".");
+    }
 
     if (have("zenity")) {
+        /* A trailing slash makes zenity treat the value as a directory. */
         snprintf(command, sizeof(command),
-                 "zenity --file-selection --title='%s' "
+                 "zenity --file-selection --title='%s' --filename='%s/' "
                  "--file-filter='JSON | *.json' --file-filter='All | *' 2>/dev/null",
-                 title);
+                 title, start);
         return run_chooser(command, out, cap);
     }
 
     if (have("kdialog")) {
         snprintf(command, sizeof(command),
-                 "kdialog --getopenfilename . '*.json|JSON files' "
-                 "--title '%s' 2>/dev/null", title);
+                 "kdialog --getopenfilename '%s' '*.json|JSON files' "
+                 "--title '%s' 2>/dev/null", start, title);
         return run_chooser(command, out, cap);
     }
 
@@ -145,21 +222,26 @@ bool filedialog_save(const char *title, const char *suggested,
     out[0] = '\0';
 
     const char *name = suggested ? suggested : "config.json";
-    char command[512];
+    char command[640];
+    char start[512];
+
+    if (!program_directory(start, sizeof(start))) {
+        snprintf(start, sizeof(start), ".");
+    }
 
     if (have("zenity")) {
         snprintf(command, sizeof(command),
                  "zenity --file-selection --save --confirm-overwrite "
-                 "--filename='%s' --title='%s' "
+                 "--filename='%s/%s' --title='%s' "
                  "--file-filter='JSON | *.json' 2>/dev/null",
-                 name, title);
+                 start, name, title);
         return run_chooser(command, out, cap);
     }
 
     if (have("kdialog")) {
         snprintf(command, sizeof(command),
-                 "kdialog --getsavefilename '%s' '*.json|JSON files' "
-                 "--title '%s' 2>/dev/null", name, title);
+                 "kdialog --getsavefilename '%s/%s' '*.json|JSON files' "
+                 "--title '%s' 2>/dev/null", start, name, title);
         return run_chooser(command, out, cap);
     }
 

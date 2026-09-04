@@ -39,7 +39,7 @@ bounded by its 512-byte JSON buffer rather than by the endpoint size.
 ## Notes
 
 Only one process may hold the vendor interface at a time. Close
-`../vendor_test.py` before connecting from the browser, and vice versa.
+`../py/main.py` before connecting from the browser, and vice versa.
 
 The CDC function is untouched by this page, so a terminal on the COM port can
 stay open alongside it. That is where the text from `{"set":{"message":...}}`

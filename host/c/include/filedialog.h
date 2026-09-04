@@ -34,6 +34,18 @@ bool filedialog_open(const char *title, char *out, size_t cap);
 bool filedialog_save(const char *title, const char *suggested,
                      char *out, size_t cap);
 
+/**
+ * Ask for an executable to control.
+ *
+ * Filters to programs on Windows; Linux has no reliable extension for these, so
+ * everything is offered.
+ *
+ * @param title Dialog caption.
+ * @param out   Receives the chosen path.
+ * @param cap   Size of @p out.
+ */
+bool filedialog_open_program(const char *title, char *out, size_t cap);
+
 bool filedialog_available(void);
 
 #endif /* FILEDIALOG_H */

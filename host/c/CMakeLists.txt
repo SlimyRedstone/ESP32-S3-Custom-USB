@@ -1,10 +1,10 @@
 cmake_minimum_required(VERSION 3.16)
-project(CustomUSBProtocol LANGUAGES C)
+project(IOMeeter LANGUAGES C)
 
 set(CMAKE_C_STANDARD 99)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 
-add_executable(CustomUSBProtocol
+add_executable(IOMeeter
     main.c
     include/usbdev.c
     include/jsoncmd.c
@@ -16,25 +16,27 @@ add_executable(CustomUSBProtocol
     include/config.c
     include/filedialog.c
     include/cli.c
+    include/mixer.c
+    include/audio_endpoint.c
 )
 
 # Clay is a single-header library; exactly one translation unit may define its
 # implementation, and ui.c is that unit.
 set_source_files_properties(include/ui.c PROPERTIES
     COMPILE_DEFINITIONS "CLAY_IMPLEMENTATION")
-set_target_properties(CustomUSBProtocol PROPERTIES OUTPUT_NAME "main")
+set_target_properties(IOMeeter PROPERTIES OUTPUT_NAME "main")
 
 # Only Windows gets the extension. CMake would append it there anyway, but
 # stating it keeps the intent obvious -- setting SUFFIX unconditionally is what
 # produced a "main.exe" on Linux.
 if(WIN32)
-    set_target_properties(CustomUSBProtocol PROPERTIES SUFFIX ".exe")
+    set_target_properties(IOMeeter PROPERTIES SUFFIX ".exe")
 endif()
 
 # Our own headers, plus the vendored Clay single-headers in libs/. libusb's
 # header is NOT here -- it comes from vcpkg or the system, and a stale copy in
 # this directory would shadow it.
-target_include_directories(CustomUSBProtocol PRIVATE
+target_include_directories(IOMeeter PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/include"
     "${CMAKE_CURRENT_SOURCE_DIR}/libs")
 
@@ -45,7 +47,7 @@ target_include_directories(CustomUSBProtocol PRIVATE
 # from the system and pkg-config or a plain link is enough.
 find_package(raylib CONFIG QUIET)
 if(TARGET raylib)
-    target_link_libraries(CustomUSBProtocol PRIVATE raylib)
+    target_link_libraries(IOMeeter PRIVATE raylib)
     message(STATUS "raylib found via: CMake package")
 else()
     find_package(PkgConfig QUIET)
@@ -53,7 +55,7 @@ else()
         pkg_check_modules(RAYLIB QUIET IMPORTED_TARGET raylib)
     endif()
     if(TARGET PkgConfig::RAYLIB)
-        target_link_libraries(CustomUSBProtocol PRIVATE PkgConfig::RAYLIB)
+        target_link_libraries(IOMeeter PRIVATE PkgConfig::RAYLIB)
         message(STATUS "raylib found via: pkg-config")
     else()
         message(FATAL_ERROR
@@ -66,26 +68,45 @@ endif()
 
 # raylib and the wheel generator both need the math library on Unix.
 if(UNIX)
-    target_link_libraries(CustomUSBProtocol PRIVATE m)
+    target_link_libraries(IOMeeter PRIVATE m)
 endif()
 
-# The tray and the window icon go through the Windows shell.
+# The tray, the window icon and the file dialogs go through the Windows shell;
+# ole32 also carries the COM plumbing the audio mixer needs.
 if(WIN32)
-    target_link_libraries(CustomUSBProtocol PRIVATE shell32 user32 gdi32 comdlg32)
+    target_link_libraries(IOMeeter PRIVATE shell32 user32 gdi32 comdlg32 ole32 mmdevapi)
+else()
+    # Per-application volume comes from PulseAudio, which also serves PipeWire
+    # through its compatibility layer. Optional: without it the mixer reports
+    # itself unavailable and everything else still runs.
+    find_package(PkgConfig QUIET)
+    if(PkgConfig_FOUND)
+        pkg_check_modules(PULSE QUIET IMPORTED_TARGET libpulse)
+    endif()
+    if(TARGET PkgConfig::PULSE)
+        target_link_libraries(IOMeeter PRIVATE PkgConfig::PULSE)
+        target_compile_definitions(IOMeeter PRIVATE MIXER_HAVE_PULSE)
+        message(STATUS "mixer: PulseAudio")
+    else()
+        message(WARNING
+            "libpulse not found: per-application volume will be disabled.
+"
+            "  Debian/Ubuntu: sudo apt install libpulse-dev")
+    endif()
 endif()
 
 # The interface loads its fonts from resources/ relative to the working
 # directory, so keep a copy beside the executable.
-add_custom_command(TARGET CustomUSBProtocol POST_BUILD
+add_custom_command(TARGET IOMeeter POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory
             "${CMAKE_CURRENT_SOURCE_DIR}/resources"
-            "$<TARGET_FILE_DIR:CustomUSBProtocol>/resources")
+            "$<TARGET_FILE_DIR:IOMeeter>/resources")
 
 if(MSVC)
-    target_compile_definitions(CustomUSBProtocol PRIVATE _CRT_SECURE_NO_WARNINGS)
-    target_compile_options(CustomUSBProtocol PRIVATE /W3)
+    target_compile_definitions(IOMeeter PRIVATE _CRT_SECURE_NO_WARNINGS)
+    target_compile_options(IOMeeter PRIVATE /W3)
 else()
-    target_compile_options(CustomUSBProtocol PRIVATE -Wall -Wextra)
+    target_compile_options(IOMeeter PRIVATE -Wall -Wextra)
 endif()
 
 # --- locate libusb-1.0 -------------------------------------------------------
@@ -108,7 +129,7 @@ if(PkgConfig_FOUND)
 endif()
 
 if(TARGET PkgConfig::LIBUSB)
-    target_link_libraries(CustomUSBProtocol PRIVATE PkgConfig::LIBUSB)
+    target_link_libraries(IOMeeter PRIVATE PkgConfig::LIBUSB)
     set(LIBUSB_SOURCE "pkg-config")
 else()
     # vcpkg installs the header as <prefix>/include/libusb-1.0/libusb.h, so the
@@ -145,14 +166,14 @@ else()
             ${_hint})
     endif()
 
-    target_include_directories(CustomUSBProtocol PRIVATE ${LIBUSB_INCLUDE_DIR})
-    target_link_libraries(CustomUSBProtocol PRIVATE ${LIBUSB_LIBRARY})
+    target_include_directories(IOMeeter PRIVATE ${LIBUSB_INCLUDE_DIR})
+    target_link_libraries(IOMeeter PRIVATE ${LIBUSB_LIBRARY})
     set(LIBUSB_SOURCE "${LIBUSB_LIBRARY}")
 
     # libusb reaches WinUSB through the setup API and COM. Required for a static
     # link, harmless alongside an import library.
     if(WIN32)
-        target_link_libraries(CustomUSBProtocol PRIVATE setupapi ole32 advapi32)
+        target_link_libraries(IOMeeter PRIVATE setupapi ole32 advapi32)
     endif()
 endif()
 
@@ -168,10 +189,10 @@ if(WIN32 AND LIBUSB_LIBRARY)
         NO_DEFAULT_PATH)
 
     if(LIBUSB_RUNTIME_DLL)
-        add_custom_command(TARGET CustomUSBProtocol POST_BUILD
+        add_custom_command(TARGET IOMeeter POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                     "${LIBUSB_RUNTIME_DLL}"
-                    "$<TARGET_FILE_DIR:CustomUSBProtocol>")
+                    "$<TARGET_FILE_DIR:IOMeeter>")
         message(STATUS "libusb runtime: ${LIBUSB_RUNTIME_DLL}")
     endif()
 endif()

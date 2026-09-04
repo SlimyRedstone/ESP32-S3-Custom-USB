@@ -7,6 +7,7 @@
 #include <string.h>
 
 #include "jsoncmd.h"
+#include "mixer.h"
 #include "proto.h"
 #include "usbdev.h"
 
@@ -18,8 +19,12 @@
 /* Near-zero so a frame is never held up waiting on the device. */
 #define POLL_TIMEOUT_MS  1
 
-/* Bound the work per frame in case the device is chatty. */
-#define POLL_MAX_PACKETS 8
+/*
+ * A moving fader sends faster than the frame rate. Draining only a few per
+ * frame lets a backlog build, which shows up as the interface lagging behind
+ * the physical control; the per-packet work is small enough to take many.
+ */
+#define POLL_MAX_PACKETS 32
 
 void app_hsv_to_rgb(float h, float s, float v, uint8_t *r, uint8_t *g, uint8_t *b)
 {
@@ -187,12 +192,19 @@ void app_init(app_t *a)
 
     app_config_load(a);
 
+    if (mixer_init()) {
+        app_log(a, APP_LOG_EVENT, "mixer ready");
+    } else {
+        app_log(a, APP_LOG_ERROR, "no system mixer; volume control disabled");
+    }
+
     app_log(a, APP_LOG_EVENT, "not connected");
 }
 
 void app_shutdown(app_t *a)
 {
     app_config_save(a);
+    mixer_shutdown();
 
     if (a->connected) {
         app_disconnect(a);
@@ -275,8 +287,6 @@ static void app_handle_packet(app_t *a, const unsigned char *data, int len)
         break;
     }
 
-    app_log(a, APP_LOG_RX, "<- %.*s", len, (const char *)data);
-
     /*
      * {"get":{"slider":{"id":N}}} -- the device is asking for a slider's state.
      * Checked first because a get and a set both carry a "slider" object, and
@@ -305,6 +315,8 @@ static void app_handle_packet(app_t *a, const unsigned char *data, int len)
 
     /* {"set":{"slider":{"id":N,"value":V}}} -- the device moved one of its own
        sliders, so mirror it and let the UI lock the pointer out briefly. */
+    app_log(a, APP_LOG_RX, "<- %.*s", len, (const char *)data);
+
     const char *slider = jsoncmd_find_object(data, len, "slider");
     if (slider) {
         /* Scanned rather than pattern-matched, so whitespace and key order in
@@ -317,7 +329,9 @@ static void app_handle_packet(app_t *a, const unsigned char *data, int len)
         if (id_at && value_at && id >= 0 && id < APP_FADER_COUNT) {
             a->sliders[id].value = value;
             a->slider_extern_seq++;
-            a->config_dirty = true;
+            /* Coalesced: a physical fader sends far faster than the frame rate,
+               and each push reaches the audio session graph. */
+            a->slider_volume_dirty[id] = true;
         }
         return;
     }
@@ -342,11 +356,25 @@ static void app_handle_packet(app_t *a, const unsigned char *data, int len)
     }
 }
 
+/* One volume push per slider per poll, however many packets arrived. */
+static void apply_dirty_volumes(app_t *a)
+{
+    for (int i = 0; i < APP_FADER_COUNT; i++) {
+        if (a->slider_volume_dirty[i]) {
+            a->slider_volume_dirty[i] = false;
+            app_apply_volume(a, i);
+        }
+    }
+}
+
 void app_poll(app_t *a)
 {
     if (!a->connected) {
         return;
     }
+
+    /* An early return below must not strand a pending change. */
+    apply_dirty_volumes(a);
 
     for (int i = 0; i < POLL_MAX_PACKETS; i++) {
         unsigned char buf[512];
@@ -368,6 +396,8 @@ void app_poll(app_t *a)
             app_handle_packet(a, buf, len);
         }
     }
+
+    apply_dirty_volumes(a);
 }
 
 void app_set_led(app_t *a)
@@ -384,6 +414,32 @@ void app_send_slider(app_t *a, int id, int value)
     snprintf(json, sizeof(json),
              "{\"set\":{\"slider\":{\"id\":%d,\"value\":%d}}}", id, value);
     app_send_json(a, json);
+}
+
+/*
+ * Faders are linear but loudness is not: a straight 0..1 mapping puts almost
+ * all of the audible change in the bottom of the travel. Cubing approximates
+ * the taper the system mixer applies, so the fader feels even.
+ */
+static float slider_to_gain(int value, int max)
+{
+    float t = (max > 0) ? (float)value / (float)max : 0.0f;
+    if (t < 0.0f) t = 0.0f;
+    if (t > 1.0f) t = 1.0f;
+    return t * t * t;
+}
+
+void app_apply_volume(app_t *a, int id)
+{
+    if (id < 0 || id >= APP_FADER_COUNT || !mixer_available()) {
+        return;
+    }
+
+    float gain = slider_to_gain(a->sliders[id].value, APP_FADER_MAX);
+
+    for (int i = 0; i < a->sliders[id].app_count; i++) {
+        mixer_set_volume(a->sliders[id].apps[i].name, gain);
+    }
 }
 
 void app_reply_slider(app_t *a, int id)

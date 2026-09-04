@@ -16,6 +16,52 @@ static const struct {
     { 3024, "Discord Audio" },
 };
 
+const char *config_basename(const char *path)
+{
+    const char *last = path;
+
+    for (const char *p = path; *p; p++) {
+        if (*p == '/' || *p == 0x5C) {   /* forward slash or backslash */
+            last = p + 1;
+        }
+    }
+    return last;
+}
+
+bool config_add_app(config_slider_t *slider, const char *path)
+{
+    if (slider == NULL || path == NULL || path[0] == 0) {
+        return false;
+    }
+    if (slider->app_count >= CONFIG_APPS_MAX) {
+        return false;
+    }
+
+    for (int i = 0; i < slider->app_count; i++) {
+        if (strcmp(slider->apps[i].path, path) == 0) {
+            return false;
+        }
+    }
+
+    config_app_t *app = &slider->apps[slider->app_count];
+    snprintf(app->path, CONFIG_PATH_MAX, "%s", path);
+    snprintf(app->name, CONFIG_NAME_MAX, "%s", config_basename(path));
+    slider->app_count++;
+    return true;
+}
+
+void config_remove_app(config_slider_t *slider, int index)
+{
+    if (slider == NULL || index < 0 || index >= slider->app_count) {
+        return;
+    }
+
+    for (int i = index; i < slider->app_count - 1; i++) {
+        slider->apps[i] = slider->apps[i + 1];
+    }
+    slider->app_count--;
+}
+
 void config_defaults(config_slider_t *out, int count, bool *debug)
 {
     int known = (int)(sizeof(DEFAULTS) / sizeof(DEFAULTS[0]));
@@ -26,6 +72,7 @@ void config_defaults(config_slider_t *out, int count, bool *debug)
 
     for (int i = 0; i < count; i++) {
         out[i].id = i;
+        out[i].app_count = 0;
         if (i < known) {
             out[i].value = DEFAULTS[i].value;
             snprintf(out[i].name, CONFIG_NAME_MAX, "%s", DEFAULTS[i].name);
@@ -222,6 +269,48 @@ bool config_load(const char *path, config_slider_t *out, int count, bool *debug)
                 read_string(name_at, out[id].name, CONFIG_NAME_MAX);
             }
 
+            const char *apps_at = member_of(p, close, "apps");
+            if (apps_at && *apps_at == 0x5B) {   /* [ */
+                out[id].app_count = 0;
+
+                for (const char *a = apps_at; a < close && *a && *a != 0x5D; ) {
+                    if (*a != 0x7B) {            /* { */
+                        a++;
+                        continue;
+                    }
+
+                    const char *app_close = object_end(a, close);
+                    if (app_close == NULL) {
+                        break;
+                    }
+
+                    if (out[id].app_count < CONFIG_APPS_MAX) {
+                        config_app_t *app = &out[id].apps[out[id].app_count];
+                        app->path[0] = 0;
+                        app->name[0] = 0;
+
+                        const char *path_at = member_of(a, app_close, "path");
+                        if (path_at) {
+                            read_string(path_at, app->path, CONFIG_PATH_MAX);
+                        }
+
+                        const char *app_name = member_of(a, app_close, "name");
+                        if (app_name) {
+                            read_string(app_name, app->name, CONFIG_NAME_MAX);
+                        } else if (app->path[0]) {
+                            snprintf(app->name, CONFIG_NAME_MAX, "%s",
+                                     config_basename(app->path));
+                        }
+
+                        if (app->path[0]) {
+                            out[id].app_count++;
+                        }
+                    }
+
+                    a = app_close + 1;
+                }
+            }
+
             out[id].id = id;
             found++;
         }
@@ -270,7 +359,20 @@ bool config_save(const char *path, const config_slider_t *in, int count,
         }
         fprintf(f, "{\"id\":%d,\"value\":%d,\"name\":\"", in[i].id, in[i].value);
         write_escaped(f, in[i].name);
-        fputs("\"}", f);
+        fputs("\",\"apps\":[", f);
+
+        for (int a = 0; a < in[i].app_count; a++) {
+            if (a > 0) {
+                fputc(',', f);
+            }
+            fputs("{\"path\":\"", f);
+            write_escaped(f, in[i].apps[a].path);
+            fputs("\",\"name\":\"", f);
+            write_escaped(f, in[i].apps[a].name);
+            fputs("\"}", f);
+        }
+
+        fputs("]}", f);
     }
     fputs("]}", f);
 

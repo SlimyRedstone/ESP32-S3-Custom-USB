@@ -7,6 +7,7 @@
 
 #include "fader.h"
 #include "filedialog.h"
+#include "mixer.h"
 #include "tray.h"
 
 #include "clay.h"
@@ -34,6 +35,14 @@ enum { FONT_BODY = 0, FONT_MONO = 1, FONT_COUNT = 2 };
 
 static bool s_menu_open;
 
+/*
+ * An app removal requested this frame. Deferred rather than applied on the
+ * spot: the click is detected while the list is being laid out, and deleting
+ * there would shift the array under the loop still walking it.
+ */
+static int s_remove_slider = -1;
+static int s_remove_index = -1;
+
 static int  s_rename = -1;
 static char s_rename_buf[CONFIG_NAME_MAX];
 
@@ -49,10 +58,19 @@ static void ui_on_fader_change(int id, int value, void *user)
         return;
     }
 
-    app->config_dirty = true;
+    /* Deliberately not marked dirty: a moving fader must not rewrite the file.
+       Names and app lists still do, and the current values ride along with the
+       next save those trigger. */
     app->slider_pending[id] = true;
     app_send_slider(app, id, value);
+    app_apply_volume(app, id);
 }
+
+/* A fader column is wider than its track so filenames have room underneath. */
+#define FADER_COLUMN_W  84
+#define APP_ROW_H       16
+#define APP_LIST_ROWS   5
+#define APP_LIST_H      (APP_ROW_H * APP_LIST_ROWS)
 
 #define UI_PI        3.14159265358979323846f
 #define WHEEL_PIXELS 200        /* texture resolution of the colour wheel */
@@ -290,9 +308,19 @@ static void ui_rebuild_wheel(const app_t *app)
  * Hit-test and marker are done outside Clay: the layout supplies the box, the
  * pointer maths happens here.
  */
+/*
+ * The wheel is drawn as a disc inside a square element, so the hit test has to
+ * be the circle rather than the box. A press is only accepted within the disc,
+ * and that press then owns the drag: without the ownership flag a press in a
+ * corner would be rejected on its first frame but accepted on the next, because
+ * IsMouseButtonPressed is only true once.
+ */
+static bool s_wheel_active;
+
 static void ui_wheel_interact(app_t *app, Clay_BoundingBox box, bool *changed)
 {
     if (!IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
+        s_wheel_active = false;
         return;
     }
 
@@ -305,10 +333,10 @@ static void ui_wheel_interact(app_t *app, Clay_BoundingBox box, bool *changed)
     float dy = m.y - cy;
     float dist = sqrtf(dx * dx + dy * dy);
 
-    if (dist > radius && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
-        return;
+    if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT) && dist <= radius) {
+        s_wheel_active = true;
     }
-    if (dist > radius * 1.6f) {
+    if (!s_wheel_active) {
         return;
     }
 
@@ -318,6 +346,8 @@ static void ui_wheel_interact(app_t *app, Clay_BoundingBox box, bool *changed)
     }
 
     app->hue = angle;
+    /* Saturation is clamped at the rim, so a drag may leave the disc and keep
+       tracking the hue, which is how a colour wheel is expected to behave. */
     app->sat = fminf(dist / radius, 1.0f);
     app_sync_hex(app);
     *changed = true;
@@ -495,6 +525,31 @@ static void ui_draw_menu(Rectangle panel)
                               row.y + (row.height - extent.y) / 2.0f },
                    size, 0.0f, (Color){ 0xe7, 0xe9, 0xee, 255 });
     }
+}
+
+static void ui_add_app(app_t *app, int slider)
+{
+    char path[CONFIG_PATH_MAX];
+
+    if (!filedialog_open_program("Choose an application", path, sizeof(path))) {
+        if (!filedialog_available()) {
+            app_log(app, APP_LOG_ERROR,
+                    "no file chooser available (install zenity or kdialog)");
+        }
+        return;
+    }
+
+    if (!config_add_app(&app->sliders[slider], path)) {
+        app_log(app, APP_LOG_ERROR, "already listed, or the slider is full");
+        return;
+    }
+
+    app->config_dirty = true;
+
+    int last = app->sliders[slider].app_count - 1;
+    app_log(app, APP_LOG_EVENT, "%s controls %s",
+            app->sliders[slider].name, app->sliders[slider].apps[last].name);
+    app_apply_volume(app, slider);
 }
 
 static void ui_menu_save_config(app_t *app)
@@ -694,17 +749,25 @@ int ui_run(app_t *app)
     }
 
     Clay_Arena arena = Clay_CreateArenaWithCapacityAndMemory(memorySize, memory);
+    int window_h = UI_WINDOW_HEIGHT_FOR(app->debug);
+
     Clay_Initialize(arena,
-                    (Clay_Dimensions){ UI_WINDOW_WIDTH, UI_WINDOW_HEIGHT },
+                    (Clay_Dimensions){ UI_WINDOW_WIDTH, (float)window_h },
                     (Clay_ErrorHandler){ HandleClayErrors, NULL });
 
-    Clay_Raylib_Initialize(UI_WINDOW_WIDTH, UI_WINDOW_HEIGHT,
-                           "Custom USB Protocol",
+    Clay_Raylib_Initialize(UI_WINDOW_WIDTH, window_h,
+                           "IOMeeter",
                            FLAG_VSYNC_HINT | FLAG_WINDOW_RESIZABLE | FLAG_MSAA_4X_HINT);
 
     /* The layout stops being readable below its design size, so make that the
        floor rather than letting the cards collapse. */
-    SetWindowMinSize(UI_WINDOW_WIDTH, UI_WINDOW_HEIGHT);
+    SetWindowMinSize(UI_WINDOW_WIDTH, window_h);
+
+    /*
+     * Escape must not end the program: it cancels the rename editor, and with
+     * the tray running the only real quit is the tray menu.
+     */
+    SetExitKey(KEY_NULL);
 
     /*
      * Follow the monitor, but never drop below UI_MIN_FPS. Vsync cannot exceed
@@ -741,7 +804,7 @@ int ui_run(app_t *app)
 
     /* On Windows this also owns the tray, and replaces the icon above with the
        multi-resolution .ico through the shell. */
-    tray_init(GetWindowHandle(), "resources/icon.ico", "Custom USB Protocol");
+    tray_init(GetWindowHandle(), "resources/icon.ico", "IOMeeter");
 
     s_fonts[FONT_BODY] = LoadFontEx("resources/Roboto-Regular.ttf", 32, NULL, 0);
     s_fonts[FONT_MONO] = LoadFontEx("resources/RobotoMono-Medium.ttf", 32, NULL, 0);
@@ -769,6 +832,10 @@ int ui_run(app_t *app)
     unsigned long slider_extern_seen = 0;
     double slider_locked_until = 0.0;
 
+    /* Loading a configuration can flip "debug", which adds or removes the
+       traffic console and so changes the height the layout needs. */
+    bool debug_seen = app->debug;
+
     bool quit = false;
 
     while (!WindowShouldClose() && !quit) {
@@ -793,6 +860,13 @@ int ui_run(app_t *app)
         }
 
         app_poll(app);
+
+        if (app->debug != debug_seen) {
+            debug_seen = app->debug;
+            window_h = UI_WINDOW_HEIGHT_FOR(app->debug);
+            SetWindowMinSize(UI_WINDOW_WIDTH, window_h);
+            SetWindowSize(GetScreenWidth(), window_h);
+        }
 
         if (app->notice_seq != s_toast_seen) {
             s_toast_seen = app->notice_seq;
@@ -952,7 +1026,7 @@ int ui_run(app_t *app)
 
                 CLAY_AUTO_ID({ .layout = { .layoutDirection = CLAY_TOP_TO_BOTTOM,
                                            .childGap = 2 } }) {
-                    CLAY_TEXT(CLAY_STRING("Custom USB Protocol"),
+                    CLAY_TEXT(CLAY_STRING("IOMeeter"),
                               CLAY_TEXT_CONFIG({ .fontId = FONT_BODY, .fontSize = 20,
                                                  .textColor = C_FG }));
                     CLAY_TEXT(CLAY_STRING("ESP32-S3 - vendor interface over libusb"),
@@ -1068,17 +1142,94 @@ int ui_run(app_t *app)
 
                     CLAY_AUTO_ID({
                         .layout = {
-                            .sizing = { CLAY_SIZING_FIT(0),
-                                        CLAY_SIZING_FIXED(FADER_SLOT_HEIGHT) },
+                            .sizing = { CLAY_SIZING_FIT(0), CLAY_SIZING_FIT(0) },
                             .childGap = 6,
                         },
                     }) {
                         for (int i = 0; i < APP_FADER_COUNT; i++) {
-                            CLAY(CLAY_IDI("Fader", i), {
-                                .layout = { .sizing = {
-                                    CLAY_SIZING_FIXED(FADER_SLOT_WIDTH),
-                                    CLAY_SIZING_FIXED(FADER_SLOT_HEIGHT) } },
-                            }) {}
+                            CLAY(CLAY_IDI("FaderCol", i), {
+                                .layout = {
+                                    .sizing = { CLAY_SIZING_FIXED(FADER_COLUMN_W),
+                                                CLAY_SIZING_FIT(0) },
+                                    .childGap = 6,
+                                    .layoutDirection = CLAY_TOP_TO_BOTTOM,
+                                    .childAlignment = { .x = CLAY_ALIGN_X_CENTER },
+                                },
+                            }) {
+                                CLAY(CLAY_IDI("Fader", i), {
+                                    .layout = { .sizing = {
+                                        CLAY_SIZING_FIXED(FADER_SLOT_WIDTH),
+                                        CLAY_SIZING_FIXED(FADER_SLOT_HEIGHT) } },
+                                }) {}
+
+                                if (ui_button(CLAY_IDI("AddApp", i), "+",
+                                              false, true, true)) {
+                                    ui_add_app(app, i);
+                                }
+
+                                CLAY(CLAY_IDI("AppList", i), {
+                                    .layout = {
+                                        .sizing = { CLAY_SIZING_GROW(0),
+                                                    CLAY_SIZING_FIXED(APP_LIST_H) },
+                                        .padding = { 4, 4, 2, 2 },
+                                        .layoutDirection = CLAY_TOP_TO_BOTTOM,
+                                    },
+                                    .backgroundColor = C_FIELD,
+                                    .cornerRadius = CLAY_CORNER_RADIUS(6),
+                                    /* Scrolls once the list outgrows the fixed
+                                       height, i.e. past five entries. */
+                                    .clip = { .vertical = true,
+                                              .childOffset = Clay_GetScrollOffset() },
+                                }) {
+                                    for (int a = 0; a < app->sliders[i].app_count; a++) {
+                                        int slot = i * CONFIG_APPS_MAX + a;
+
+                                        CLAY(CLAY_IDI("AppRow", slot), {
+                                            .layout = {
+                                                .sizing = { CLAY_SIZING_GROW(0),
+                                                            CLAY_SIZING_FIXED(APP_ROW_H) },
+                                                .childGap = 2,
+                                                .childAlignment = { .y = CLAY_ALIGN_Y_CENTER },
+                                            },
+                                        }) {
+                                            CLAY_AUTO_ID({
+                                                .layout = { .sizing = { CLAY_SIZING_GROW(0) } },
+                                            }) {
+                                                CLAY_TEXT(dyn(app->sliders[i].apps[a].name),
+                                                    CLAY_TEXT_CONFIG({
+                                                        .fontId = FONT_BODY,
+                                                        .fontSize = 11,
+                                                        .textColor = C_MUTED }));
+                                            }
+
+                                            CLAY(CLAY_IDI("AppDel", slot), {
+                                                .layout = {
+                                                    .sizing = { CLAY_SIZING_FIXED(13),
+                                                                CLAY_SIZING_FIXED(13) },
+                                                    .childAlignment = { CLAY_ALIGN_X_CENTER,
+                                                                        CLAY_ALIGN_Y_CENTER },
+                                                },
+                                                .backgroundColor = Clay_Hovered()
+                                                                 ? C_WARN : C_LINE,
+                                                .cornerRadius = CLAY_CORNER_RADIUS(3),
+                                            }) {
+                                                if (clicked(true)) {
+                                                    s_remove_slider = i;
+                                                    s_remove_index = a;
+                                                }
+                                                /* "x" rather than a multiplication
+                                                   sign: the fonts are loaded with
+                                                   the default ASCII range only. */
+                                                CLAY_TEXT(CLAY_STRING("x"),
+                                                    CLAY_TEXT_CONFIG({
+                                                        .fontId = FONT_BODY,
+                                                        .fontSize = 11,
+                                                        .textColor = C_FG }));
+                                            }
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -1168,6 +1319,18 @@ int ui_run(app_t *app)
         if (app->config_dirty && GetTime() - last_config_save > 1.0) {
             last_config_save = GetTime();
             app_config_save(app);
+        }
+
+        if (s_remove_slider >= 0) {
+            config_slider_t *slider = &app->sliders[s_remove_slider];
+            if (s_remove_index < slider->app_count) {
+                app_log(app, APP_LOG_EVENT, "%s no longer controls %s",
+                        slider->name, slider->apps[s_remove_index].name);
+                config_remove_app(slider, s_remove_index);
+                app->config_dirty = true;
+            }
+            s_remove_slider = -1;
+            s_remove_index = -1;
         }
 
         Clay_RenderCommandArray commands = Clay_EndLayout();

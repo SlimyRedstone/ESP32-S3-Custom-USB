@@ -85,6 +85,10 @@ typedef struct {
      */
     bool slider_pending[APP_FADER_COUNT];
 
+    /* Set when an inbound update changed a value; the volume is pushed once at
+       the end of the poll rather than per packet. */
+    bool slider_volume_dirty[APP_FADER_COUNT];
+
     bool live_send;
 
     /* Ring buffer; oldest entry is dropped once it fills. */
@@ -128,6 +132,13 @@ void app_send_slider(app_t *a, int id, int value);
  * @param id Slider index; ignored if out of range.
  */
 void app_reply_slider(app_t *a, int id);
+
+/**
+ * Push a slider's value to every application it controls.
+ *
+ * @param id Slider index; ignored if out of range.
+ */
+void app_apply_volume(app_t *a, int id);
 void app_get(app_t *a, const char *what);
 void app_send_message(app_t *a);
 void app_set_config(app_t *a);
