@@ -25,6 +25,25 @@ static void print_string_desc(libusb_device_handle *h, uint8_t index,
 
 static void report_open_failure(int rc, uint16_t vid, uint16_t pid)
 {
+#ifndef _WIN32
+    /*
+     * The device node is owned by root until a rule hands it to the logged-in
+     * user. Reaching for sudo instead is the obvious move and the wrong one:
+     * it opens the device but cuts the process off from the session's sound
+     * server, so the mixer then reports itself unavailable.
+     */
+    if (rc == LIBUSB_ERROR_ACCESS) {
+        fprintf(stderr,
+            "device %04X:%04X was found, but this user may not open it.\n"
+            "Install the udev rule once, then unplug and replug the device:\n"
+            "  sudo ./install-linux.sh --udev\n"
+            "Running the whole program under sudo works for USB but loses the\n"
+            "audio mixer: root cannot reach the desktop session's sound server.\n",
+            vid, pid);
+        return;
+    }
+#endif
+
     if (rc != LIBUSB_ERROR_NOT_SUPPORTED) {
         fprintf(stderr, "libusb_open: %s\n", libusb_error_name(rc));
         return;

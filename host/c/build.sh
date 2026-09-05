@@ -11,14 +11,16 @@
 # Unlike the Windows build there is no vcpkg or MinGW here: libusb comes from
 # the system package manager and CMake finds it through pkg-config.
 #
-#   sudo apt install build-essential cmake pkg-config libusb-1.0-0-dev
+#   sudo apt install build-essential cmake pkg-config libusb-1.0-0-dev libpulse-dev
 #
-# Talking to the device needs permission for the USB node. Either run as root,
-# or install a udev rule once:
+# Talking to the device needs permission for the USB node. Install the udev
+# rule once, then unplug and replug the device:
 #
-#   echo 'SUBSYSTEM=="usb", ATTR{idVendor}=="303a", ATTR{idProduct}=="4001", MODE="0660", TAG+="uaccess"' \
-#     | sudo tee /etc/udev/rules.d/99-esp32s3-vendor.rules
-#   sudo udevadm control --reload-rules && sudo udevadm trigger
+#   sudo ./install-linux.sh --udev
+#
+# Do NOT run IOMeeter with sudo instead. That opens the device but cuts the
+# process off from the desktop session's sound server, so the audio mixer
+# reports itself unavailable and no volume is controlled.
 #
 # This builds and runs in place. To put IOMeeter in the application menu and
 # give it a proper icon in the panel, run ./install-linux.sh afterwards.
@@ -111,8 +113,11 @@ run() {
     # libusb reports a permission problem as a failure to open the device.
     if [ $status -ne 0 ] && [ "$(id -u)" -ne 0 ]; then
         echo >&2
-        echo "If the device was found but could not be opened, you likely need" >&2
-        echo "the udev rule described at the top of this script." >&2
+        echo "If the device was found but could not be opened, install the" >&2
+        echo "USB permission rule and replug the device:" >&2
+        echo "    sudo ./install-linux.sh --udev" >&2
+        echo "Do not use sudo to work around it: the audio mixer needs to run" >&2
+        echo "as your own user." >&2
     fi
     return $status
 }

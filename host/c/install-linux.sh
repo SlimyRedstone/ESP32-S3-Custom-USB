@@ -12,6 +12,12 @@
 #   ./install-linux.sh --system     install for everyone, under /usr/local
 #   ./install-linux.sh --uninstall  remove whichever is present
 #
+# Separately, the USB device is owned by root until a udev rule hands it to
+# the desktop user. Without that, IOMeeter cannot open the device; with sudo
+# instead, it opens the device but loses the audio mixer. Install the rule:
+#
+#   sudo ./install-linux.sh --udev
+#
 # Run ./build.sh first: this installs what that produced.
 #
 set -uo pipefail
@@ -27,12 +33,14 @@ usage() {
     echo "  (none)       install for this user, under ~/.local"
     echo "  --system     install for everyone, under /usr/local (needs root)"
     echo "  --uninstall  remove whichever installation is present"
+    echo "  --udev       install the USB permission rule (needs root)"
 }
 
 for arg in "$@"; do
     case "$arg" in
         --system)    PREFIX=/usr/local ;;
         --uninstall) MODE=uninstall ;;
+        --udev)      MODE=udev ;;
         -h|--help)   usage; exit 0 ;;
         *)
             echo "Unknown option: $arg" >&2
@@ -49,6 +57,7 @@ THEME_DIR="$PREFIX/share/icons/hicolor"
 ICON_DIR="$THEME_DIR/128x128/apps"
 DESKTOP_DIR="$PREFIX/share/applications"
 DESKTOP_FILE="$DESKTOP_DIR/IOMeeter.desktop"
+UDEV_RULE=/etc/udev/rules.d/99-iomeeter.rules
 
 # The menu and the icon theme are both cached; without this the entry can take
 # until the next login to appear.
@@ -65,6 +74,22 @@ refresh() {
 need_root() {
     [ "$PREFIX" = /usr/local ] && [ "$(id -u)" -ne 0 ]
 }
+
+if [ "$MODE" = udev ]; then
+    if [ "$(id -u)" -ne 0 ]; then
+        echo "Installing the udev rule needs root:" >&2
+        echo "    sudo ./install-linux.sh --udev" >&2
+        exit 1
+    fi
+
+    install -m 644 resources/99-iomeeter.rules "$UDEV_RULE" || exit 1
+    udevadm control --reload-rules && udevadm trigger
+
+    echo "Installed $UDEV_RULE"
+    echo "Unplug and replug the device for it to take effect."
+    echo "IOMeeter can then be run WITHOUT sudo, which is what the mixer needs."
+    exit 0
+fi
 
 if [ "$MODE" = uninstall ]; then
     if need_root; then
@@ -139,4 +164,12 @@ case ":$PATH:" in
     *) echo "Note: $BIN_DIR is not on PATH, so \"IOMeeter\" will not run from a shell." ;;
 esac
 
+if [ ! -f "$UDEV_RULE" ]; then
+    echo
+    echo "The USB permission rule is not installed, so IOMeeter will not be"
+    echo "able to open the device. Install it with:"
+    echo "    sudo ./install-linux.sh --udev"
+fi
+
+echo
 echo "IOMeeter should now be in the menu under Sound & Video."
