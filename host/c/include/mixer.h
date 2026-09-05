@@ -42,6 +42,14 @@ void mixer_shutdown(void);
 bool mixer_available(void);
 
 /**
+ * Why the mixer is unavailable, for logging. Never NULL.
+ *
+ * A build without PulseAudio and a session the program cannot reach both end
+ * up disabled, and the two are fixed in completely different ways.
+ */
+const char *mixer_last_error(void);
+
+/**
  * List the applications currently playing audio.
  *
  * @param out Receives up to @p max sessions.

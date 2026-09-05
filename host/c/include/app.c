@@ -195,7 +195,8 @@ void app_init(app_t *a)
     if (mixer_init()) {
         app_log(a, APP_LOG_EVENT, "mixer ready");
     } else {
-        app_log(a, APP_LOG_ERROR, "no system mixer; volume control disabled");
+        app_log(a, APP_LOG_ERROR, "volume control disabled: %s",
+                mixer_last_error());
     }
 
     app_log(a, APP_LOG_EVENT, "not connected");

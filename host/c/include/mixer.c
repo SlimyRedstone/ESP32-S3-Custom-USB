@@ -39,6 +39,23 @@ static float clamp01(float v)
     return v;
 }
 
+/*
+ * Why the last attempt failed. "Volume control disabled" on its own leaves no
+ * way to tell a build without PulseAudio from a session the program cannot
+ * reach, which are fixed in completely different ways.
+ */
+static char s_error[192] = "not initialised";
+
+static void set_error(const char *text)
+{
+    snprintf(s_error, sizeof(s_error), "%s", text);
+}
+
+const char *mixer_last_error(void)
+{
+    return s_error;
+}
+
 /* ========================================================================== */
 #ifdef _WIN32
 /* ========================================================================== */
@@ -86,7 +103,11 @@ bool mixer_init(void)
     } else if (hr != RPC_E_CHANGED_MODE) {
         /* RPC_E_CHANGED_MODE only means somebody else already picked a model,
            which is fine; anything else is fatal. */
-        fprintf(stderr, "mixer: CoInitializeEx failed (0x%08lx)\n", (unsigned long)hr);
+        char why[96];
+        snprintf(why, sizeof(why), "COM initialisation failed (0x%08lx)",
+                 (unsigned long)hr);
+        set_error(why);
+        fprintf(stderr, "mixer: %s\n", why);
         return false;
     }
 
@@ -431,6 +452,7 @@ bool mixer_set_mute(const char *process, bool mute)
 /* ========================================================================== */
 
 #include <pulse/pulseaudio.h>
+#include <unistd.h>
 
 /*
  * A threaded mainloop is used so the caller never has to pump anything: every
@@ -550,12 +572,14 @@ bool mixer_init(void)
 
     s_loop = pa_threaded_mainloop_new();
     if (s_loop == NULL) {
+        set_error("could not create the PulseAudio main loop");
         return false;
     }
 
     pa_mainloop_api *api = pa_threaded_mainloop_get_api(s_loop);
     s_ctx = pa_context_new(api, "IOMeeter");
     if (s_ctx == NULL) {
+        set_error("could not create the PulseAudio context");
         pa_threaded_mainloop_free(s_loop);
         s_loop = NULL;
         return false;
@@ -565,6 +589,7 @@ bool mixer_init(void)
 
     if (pa_context_connect(s_ctx, NULL, PA_CONTEXT_NOFLAGS, NULL) < 0 ||
         pa_threaded_mainloop_start(s_loop) < 0) {
+        set_error("could not reach the PulseAudio socket");
         mixer_shutdown();
         return false;
     }
@@ -584,7 +609,19 @@ bool mixer_init(void)
     pa_threaded_mainloop_unlock(s_loop);
 
     if (!s_ready) {
-        fprintf(stderr, "mixer: no PulseAudio or PipeWire server reachable\n");
+        /*
+         * The session socket belongs to the desktop user, so root reaches
+         * nothing even on a machine where audio is working normally. That
+         * is easy to hit here, because talking to the device without the
+         * udev rule needs sudo.
+         */
+        if (geteuid() == 0) {
+            set_error("running as root, which cannot reach the desktop "
+                      "session's audio server; use the udev rule instead of sudo");
+        } else {
+            set_error("no PulseAudio or PipeWire server reachable");
+        }
+        fprintf(stderr, "mixer: %s\n", s_error);
         mixer_shutdown();
     }
     return s_ready;
@@ -678,7 +715,9 @@ bool mixer_set_mute(const char *process, bool mute)
 
 bool mixer_init(void)
 {
-    fprintf(stderr, "mixer: built without PulseAudio support\n");
+    set_error("built without PulseAudio support; install libpulse-dev, "
+              "then ./build.sh clean");
+    fprintf(stderr, "mixer: %s\n", s_error);
     return false;
 }
 
