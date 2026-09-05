@@ -26,9 +26,10 @@ cd "$(dirname "$0")" || exit 1
 
 PREFIX="$HOME/.local"
 MODE=install
+SYSTEM=0
 
 usage() {
-    echo "Usage: ./install-linux.sh [--system|--uninstall]"
+    echo "Usage: ./install-linux.sh [--system|--uninstall|--udev]"
     echo
     echo "  (none)       install for this user, under ~/.local"
     echo "  --system     install for everyone, under /usr/local (needs root)"
@@ -38,7 +39,7 @@ usage() {
 
 for arg in "$@"; do
     case "$arg" in
-        --system)    PREFIX=/usr/local ;;
+        --system)    PREFIX=/usr/local; SYSTEM=1 ;;
         --uninstall) MODE=uninstall ;;
         --udev)      MODE=udev ;;
         -h|--help)   usage; exit 0 ;;
@@ -50,6 +51,22 @@ for arg in "$@"; do
             ;;
     esac
 done
+
+if [ "$SYSTEM" -eq 0 ] && [ "$MODE" = install ] && [ "$(id -u)" -eq 0 ]; then
+    echo "Do not run a user install with sudo: \$HOME is /root there, so" >&2
+    echo "everything would be installed for the root account instead of you." >&2
+    echo >&2
+    echo "Run it as yourself:" >&2
+    echo "    ./install-linux.sh" >&2
+    echo >&2
+    echo "Only --udev and --system need root." >&2
+    if [ -n "${SUDO_USER-}" ] && [ -e "/root/.local/bin/IOMeeter" ]; then
+        echo >&2
+        echo "An earlier run did install into /root. Undo it with:" >&2
+        echo "    sudo $0 --uninstall" >&2
+    fi
+    exit 1
+fi
 
 BIN_DIR="$PREFIX/bin"
 DATA_DIR="$PREFIX/share/IOMeeter"
@@ -82,7 +99,16 @@ if [ "$MODE" = udev ]; then
         exit 1
     fi
 
-    install -m 644 resources/99-iomeeter.rules "$UDEV_RULE" || exit 1
+    cat > "$UDEV_RULE" <<'RULE' || exit 1
+# IOMeeter: hand the ESP32-S3 vendor interface to whoever is logged in at
+# the desktop, so libusb can open it without root.
+#
+# Running IOMeeter under sudo is not an equivalent workaround: it opens the
+# device but cuts the process off from the session sound server, so the
+# audio mixer stops working.
+SUBSYSTEM=="usb", ATTR{idVendor}=="303a", ATTR{idProduct}=="4001", MODE="0660", TAG+="uaccess"
+RULE
+    chmod 644 "$UDEV_RULE"
     udevadm control --reload-rules && udevadm trigger
 
     echo "Installed $UDEV_RULE"
