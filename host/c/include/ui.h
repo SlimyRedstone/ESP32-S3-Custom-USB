@@ -23,7 +23,13 @@
 #define UI_WINDOW_HEIGHT_FOR(debug)     ((debug) ? UI_WINDOW_HEIGHT_DEBUG : UI_WINDOW_HEIGHT_PLAIN)
 
 /* Floor for the frame rate when the monitor refreshes more slowly than this. */
-#define UI_MIN_FPS        90
+/* The interface runs at the monitor's refresh rate. Used only when the driver
+   does not report one. */
+#define UI_FALLBACK_FPS   60
+
+/* Minimum the layout stays usable at. */
+#define UI_WINDOW_MIN_WIDTH   850
+#define UI_WINDOW_MIN_HEIGHT  550
 
 /**
  * Open the window, run the event loop until it is closed, then clean up.

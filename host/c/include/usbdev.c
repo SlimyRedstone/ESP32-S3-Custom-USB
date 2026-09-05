@@ -36,7 +36,7 @@ static void report_open_failure(int rc, uint16_t vid, uint16_t pid)
         fprintf(stderr,
             "device %04X:%04X was found, but this user may not open it.\n"
             "Install the udev rule once, then unplug and replug the device:\n"
-            "  sudo ./install-linux.sh --udev\n"
+            "  sudo ./install.sh --udev\n"
             "Running the whole program under sudo works for USB but loses the\n"
             "audio mixer: root cannot reach the desktop session's sound server.\n",
             vid, pid);

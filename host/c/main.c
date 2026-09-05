@@ -25,6 +25,7 @@
 #include "app.h"
 #include "cli.h"
 #include "console.h"
+#include "instance.h"
 #include "ui.h"
 
 int main(int argc, char **argv)
@@ -36,6 +37,12 @@ int main(int argc, char **argv)
         return cli_run(argc, argv);
     } */
 
+    /* A second launch hands its request to the copy already running, which
+       raises its window; there is nothing left for this one to do. */
+    if (!instance_acquire()) {
+        return 0;
+    }
+
     static app_t app;
     app_init(&app);
 
@@ -46,6 +53,7 @@ int main(int argc, char **argv)
 
     int status = ui_run(&app);
     app_shutdown(&app);
+    instance_release();
     console_shutdown();
     return status;
 }

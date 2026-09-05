@@ -23,6 +23,8 @@ add_executable(IOMeeter
     include/respath.c
     include/cli.c
     include/console.c
+    include/instance.c
+    libs/cJSON.c
     include/mixer.c
     include/audio_endpoint.c
 )

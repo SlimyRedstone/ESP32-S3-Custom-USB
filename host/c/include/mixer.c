@@ -371,10 +371,29 @@ done:
 
 static void cache_ensure(bool force)
 {
-    if (force || !s_cache_valid ||
-        (GetTickCount() - s_cache_stamp) > CACHE_TTL_MS) {
+    if (force || !s_cache_valid) {
         cache_build();
     }
+}
+
+/*
+ * Whether a failed lookup has earned a rebuild.
+ *
+ * Sessions appear and disappear, so a miss may mean the cache is out of date
+ * rather than that the application is silent. Finding out costs a full
+ * enumeration, so it is done at most once per CACHE_TTL_MS: a fader moving
+ * against an idle application then costs one rebuild every couple of seconds
+ * instead of one per frame. Rebuilding on a timer instead would put that cost
+ * into a frame even when every lookup is hitting.
+ */
+static bool miss_rebuild_due(void)
+{
+    DWORD now = GetTickCount();
+
+    if (s_cache_valid && (now - s_cache_stamp) < CACHE_TTL_MS) {
+        return false;
+    }
+    return true;
 }
 
 int mixer_enumerate(mixer_session_t *out, int max)
@@ -392,7 +411,7 @@ bool mixer_set_volume(const char *process, float volume)
     float level = clamp01(volume);
 
     for (int attempt = 0; attempt < 2; attempt++) {
-        cache_ensure(attempt > 0);
+        cache_ensure(false);
 
         int hits = 0;
         bool stale = false;
@@ -409,13 +428,31 @@ bool mixer_set_volume(const char *process, float volume)
             hits++;
         }
 
-        if (!stale && hits > 0) {
+        if (stale) {
+            /* A dead handle makes the rest of the cache suspect too, so it is
+               rebuilt and the write retried once. */
+            cache_clear();
+            continue;
+        }
+
+        if (hits > 0) {
             return true;
         }
 
-        /* Either nothing matched or a handle went bad; rebuild once and retry
-           so a newly started application is picked up promptly. */
-        cache_clear();
+        /*
+         * Nothing matched, which is the normal state for an application that
+         * is not playing anything: it has no session at all.
+         *
+         * This used to force a rebuild and then clear the cache, so a fader
+         * assigned to an idle application cost two full session enumerations
+         * per call and destroyed the cache every other application depended
+         * on. Moving one fader was then tens of milliseconds a frame.
+         */
+        if (attempt == 0 && miss_rebuild_due()) {
+            cache_clear();
+            continue;
+        }
+        return false;
     }
     return false;
 }

@@ -20,6 +20,7 @@
 typedef struct usbdev usbdev_t;
 
 #include "config.h"
+#include "proto.h"
 
 #define APP_LOG_CAPACITY   256
 #define APP_LOG_TEXT_MAX   200
@@ -51,6 +52,10 @@ typedef struct {
     usbdev_t *dev;
     bool      connected;
 
+    /* Reassembles the IN endpoint, which is a byte stream rather than a
+       sequence of messages. */
+    proto_framer_t framer;
+
     /* Colour being edited, kept as HSV so the wheel and the brightness slider
        stay independent. */
     float hue;          /*!< 0..360 */
@@ -68,6 +73,10 @@ typedef struct {
        a drag does not write the file on every frame. */
     bool config_dirty;
 
+    /* Where the configuration was last loaded from or saved to, which is
+       what "Reload config" re-reads. Defaults to APP_CONFIG_PATH. */
+    char config_path[CONFIG_PATH_MAX];
+
     /* From the "debug" key. When false the traffic console is hidden. */
     bool debug;
 
@@ -77,6 +86,10 @@ typedef struct {
      * is not fought by the pointer.
      */
     unsigned long slider_extern_seq;
+
+    /* Per fader, so the interface can tell which one the device moved
+       rather than only that something moved. */
+    unsigned long slider_extern_at[APP_FADER_COUNT];
 
     /*
      * Set when the user moves a fader, cleared once the device has been told.
@@ -154,6 +167,9 @@ void app_config_save(app_t *a);
 bool app_config_save_as(app_t *a, const char *path);
 
 bool app_config_load_from(app_t *a, const char *path);
+
+/** Re-read a->config_path, discarding anything changed since. */
+bool app_config_reload(app_t *a);
 
 void app_notify(app_t *a, const char *text);
 

@@ -16,6 +16,7 @@ if "%IN_CMD%"==""        goto :default
 if /i "%IN_CMD%"=="run"   goto :run
 if /i "%IN_CMD%"=="clear" goto :clear
 if /i "%IN_CMD%"=="clean" goto :clean
+if /i "%IN_CMD%"=="build" goto :buildonly
 if /i "%IN_CMD%"=="help"  goto :usage
 if /i "%IN_CMD%"=="-h"    goto :usage
 if /i "%IN_CMD%"=="--help" goto :usage
@@ -24,6 +25,18 @@ if "%IN_CMD%"=="/?"       goto :usage
 echo Unknown option: %IN_CMD%
 echo.
 goto :usage
+
+
+REM Compile without launching, which is what install.bat wants.
+:buildonly
+echo.
+if not exist "build\CMakeCache.txt" (
+    call :do_setup
+    if errorlevel 1 exit /b 1
+)
+call :do_compile
+if errorlevel 1 exit /b 1
+exit /b 0
 
 
 REM Configure only when there is no cache, then build and run.
@@ -71,6 +84,7 @@ echo.
 echo   (none)   configure if needed, compile, then run
 echo   clear    clear the console, compile, then run
 echo   clean    wipe the build directory and reconfigure
+echo   build    compile without running
 echo   run      run without recompiling
 echo   help     show this text
 exit /b 0

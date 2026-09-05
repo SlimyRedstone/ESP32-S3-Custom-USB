@@ -7,6 +7,14 @@
 /* Track geometry within the reserved slot. The knob is wider than the track, so
    it still stands proud of it as on a real fader. */
 #define KNOB_RADIUS   21.0f
+
+/* The knob is a rectangle as wide as the old circle and half as tall. Travel
+   reserves half its height at each end, so it reaches both ends of the track
+   without overhanging either. */
+#define KNOB_WIDTH    (KNOB_RADIUS * 2.0f)
+#define KNOB_HEIGHT   KNOB_RADIUS
+#define KNOB_BORDER   3.0f
+
 #define TRACK_WIDTH   22.0f
 
 /* Distance from the bottom of the track to the end of the label. */
@@ -36,6 +44,15 @@ static const Color KNOB_FILL    = { 108, 190, 145, 255 };
 static const Color KNOB_RING    = { 176, 236, 200, 255 };
 static const Color LABEL_TEXT   = { 32,  62,  46,  255 };
 
+/* Driven by the hardware fader rather than the pointer: #de123a, with the
+   same light-top, deep-bottom, darker-edge relationship as the mint set. */
+static const Color DEVICE_TOP    = { 240, 74,  106, 255 };
+static const Color DEVICE_BOTTOM = { 222, 18,  58,  255 };
+static const Color DEVICE_EDGE   = { 176, 14,  46,  255 };
+static const Color DEVICE_KNOB   = { 222, 18,  58,  255 };
+static const Color DEVICE_RING   = { 245, 120, 145, 255 };
+static const Color DEVICE_LABEL  = { 70,  10,  22,  255 };
+
 /*
  * Which fader owns the current drag, or FADER_NONE.
  *
@@ -63,9 +80,14 @@ static fader_metrics_t metrics_of(Clay_BoundingBox box)
 
     m.centre_x = box.x + box.width / 2.0f;
 
-    /* The knob must stay inside the track, so travel is inset by its radius. */
-    m.track_top = box.y + KNOB_RADIUS;
-    m.track_bottom = box.y + FADER_TRACK_HEIGHT - KNOB_RADIUS;
+    /*
+     * Travel is inset by half the knob, which is what keeps it inside the
+     * track: at either extreme the knob's edge is flush with the end of the
+     * track. Insetting by the full height instead left it a knob short of
+     * both ends.
+     */
+    m.track_top = box.y + KNOB_HEIGHT / 2.0f;
+    m.track_bottom = box.y + box.height - KNOB_HEIGHT / 2.0f;
     m.travel = m.track_bottom - m.track_top;
 
     if (m.travel < 1.0f) {
@@ -107,7 +129,7 @@ bool fader_interact(int id, Clay_BoundingBox box, int *value, int max,
     if (s_active == FADER_NONE && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
         bool inside = mouse.x >= box.x && mouse.x <= box.x + box.width &&
                       mouse.y >= box.y &&
-                      mouse.y <= box.y + FADER_TRACK_HEIGHT;
+                      mouse.y <= box.y + box.height;
         if (inside) {
             s_active = id;
         }
@@ -138,58 +160,99 @@ bool fader_interact(int id, Clay_BoundingBox box, int *value, int max,
     return true;
 }
 
-void fader_draw(Clay_BoundingBox box, int value, int max, const char *label,
-                void *font)
+/*
+ * Smoothed knob positions, one per id. Negative means "no value yet", which
+ * snaps on the first frame so the strip does not sweep up from zero at start.
+ */
+static float s_display[FADER_MAX_IDS] = {
+    -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f
+};
+
+/* Time constant of the ease, in seconds. Short enough not to feel like lag. */
+#define FADER_SMOOTH_TAU 0.010f
+
+/* Framerate independent exponential approach to @p target. */
+static float smoothed(int id, float target, bool snap)
+{
+    if (id < 0 || id >= FADER_MAX_IDS) {
+        return target;
+    }
+
+    float *current = &s_display[id];
+
+    if (snap || *current < 0.0f) {
+        *current = target;
+        return target;
+    }
+
+    float dt = GetFrameTime();
+    if (dt <= 0.0f) {
+        return *current;
+    }
+
+    /* 1 - exp(-dt/tau) lands in the same place whatever the frame rate, unlike
+       a fixed fraction per frame. */
+    float k = 1.0f - expf(-dt / FADER_SMOOTH_TAU);
+    *current += (target - *current) * k;
+
+    /* Stop creeping once it is closer than a pixel is worth. */
+    if (fabsf(target - *current) < 0.0005f) {
+        *current = target;
+    }
+    return *current;
+}
+
+void fader_draw(int id, Clay_BoundingBox box, int value, int max,
+                const char *label, void *font, bool device)
 {
     Font f = *(Font *)font;
     fader_metrics_t m = metrics_of(box);
 
+    /* The filled half, the knob and the label all recolour together, so the
+       source of the movement is obvious at a glance. */
+    Color track_top    = device ? DEVICE_TOP    : TRACK_TOP;
+    Color track_bottom = device ? DEVICE_BOTTOM : TRACK_BOTTOM;
+    Color track_edge   = device ? DEVICE_EDGE   : TRACK_EDGE;
+    Color knob_fill    = device ? DEVICE_KNOB   : KNOB_FILL;
+    Color knob_ring    = device ? DEVICE_RING   : KNOB_RING;
+    Color label_text   = device ? DEVICE_LABEL  : LABEL_TEXT;
+
     float half = TRACK_WIDTH / 2.0f;
-    float cap_r = half;
-    float top_cap_y = box.y + cap_r;
-    float bottom_cap_y = box.y + FADER_TRACK_HEIGHT - cap_r;
+    float track_top_y = box.y;
+    float track_bottom_y = box.y + box.height;
 
     /* Knob position: 0 sits at the bottom of the travel. */
     float t = (max > 0) ? (float)value / (float)max : 0.0f;
+    t = smoothed(id, t, s_active == id);
     float knob_y = m.track_bottom - t * m.travel;
 
     /*
      * The track is drawn in two pieces meeting at the knob: filled below it,
-     * empty above. Clamping to the caps keeps the split inside the straight
-     * section; the knob is wider than the track, so the sliver of "wrong"
-     * colour beyond either clamp is hidden underneath it.
+     * empty above. A square track needs no end caps, so each piece is one
+     * gradient rectangle running the full width.
      */
-    float split = fminf(fmaxf(knob_y, top_cap_y), bottom_cap_y);
+    float split = fminf(fmaxf(knob_y, track_top_y), track_bottom_y);
 
-    /*
-     * A pill with a vertical gradient: an end cap at each extreme plus a
-     * gradient rectangle between them. DrawRectangleRounded cannot take a
-     * gradient and a gradient rectangle has no rounded ends, so the shape is
-     * built from both.
-     */
-    DrawCircleV((Vector2){ m.centre_x, top_cap_y }, cap_r, EMPTY_TOP);
-    DrawCircleV((Vector2){ m.centre_x, bottom_cap_y }, cap_r, TRACK_BOTTOM);
-
-    float empty_h = split - top_cap_y;
+    float empty_h = split - track_top_y;
     if (empty_h > 0.0f) {
-        DrawRectangleGradientV((int)(m.centre_x - half), (int)top_cap_y,
+        DrawRectangleGradientV((int)(m.centre_x - half), (int)track_top_y,
                                (int)TRACK_WIDTH, (int)empty_h,
                                EMPTY_TOP, EMPTY_BOTTOM);
-        DrawLineEx((Vector2){ m.centre_x - half, top_cap_y },
+        DrawLineEx((Vector2){ m.centre_x - half, track_top_y },
                    (Vector2){ m.centre_x - half, split }, 1.0f, EMPTY_EDGE);
-        DrawLineEx((Vector2){ m.centre_x + half, top_cap_y },
+        DrawLineEx((Vector2){ m.centre_x + half, track_top_y },
                    (Vector2){ m.centre_x + half, split }, 1.0f, EMPTY_EDGE);
     }
 
-    float filled_h = bottom_cap_y - split;
+    float filled_h = track_bottom_y - split;
     if (filled_h > 0.0f) {
         DrawRectangleGradientV((int)(m.centre_x - half), (int)split,
                                (int)TRACK_WIDTH, (int)filled_h,
-                               TRACK_TOP, TRACK_BOTTOM);
+                               track_top, track_bottom);
         DrawLineEx((Vector2){ m.centre_x - half, split },
-                   (Vector2){ m.centre_x - half, bottom_cap_y }, 1.0f, TRACK_EDGE);
+                   (Vector2){ m.centre_x - half, track_bottom_y }, 1.0f, track_edge);
         DrawLineEx((Vector2){ m.centre_x + half, split },
-                   (Vector2){ m.centre_x + half, bottom_cap_y }, 1.0f, TRACK_EDGE);
+                   (Vector2){ m.centre_x + half, track_bottom_y }, 1.0f, track_edge);
     }
 
     /*
@@ -204,16 +267,21 @@ void fader_draw(Clay_BoundingBox box, int value, int max, const char *label,
      * the bottom upwards.
      */
     Vector2 extent = MeasureTextEx(f, label, LABEL_SIZE, 0.0f);
-    float label_centre_y = box.y + FADER_TRACK_HEIGHT - LABEL_INSET
+    float label_centre_y = box.y + box.height - LABEL_INSET
                          - extent.x / 2.0f;
 
     draw_bold_pro(f, label,
                   (Vector2){ m.centre_x, label_centre_y },
                   (Vector2){ extent.x / 2.0f, extent.y / 2.0f },
-                  -90.0f, LABEL_SIZE, LABEL_TEXT);
+                  -90.0f, LABEL_SIZE, label_text);
 
-    Vector2 knob = { m.centre_x, knob_y };
+    Rectangle knob = { m.centre_x - KNOB_WIDTH / 2.0f,
+                       knob_y - KNOB_HEIGHT / 2.0f,
+                       KNOB_WIDTH, KNOB_HEIGHT };
 
-    DrawCircleV(knob, KNOB_RADIUS, KNOB_RING);
-    DrawCircleV(knob, KNOB_RADIUS - 3.0f, KNOB_FILL);
+    DrawRectangleRec(knob, knob_ring);
+    DrawRectangleRec((Rectangle){ knob.x + KNOB_BORDER,
+                                  knob.y + KNOB_BORDER,
+                                  knob.width - 2.0f * KNOB_BORDER,
+                                  knob.height - 2.0f * KNOB_BORDER }, knob_fill);
 }

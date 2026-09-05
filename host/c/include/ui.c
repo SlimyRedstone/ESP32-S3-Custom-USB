@@ -7,6 +7,7 @@
 
 #include "fader.h"
 #include "filedialog.h"
+#include "instance.h"
 #include "mixer.h"
 #include "respath.h"
 #include "tray.h"
@@ -19,10 +20,16 @@
 
 #define COL(r, g, b, a) ((Clay_Color){ (float)(r), (float)(g), (float)(b), (float)(a) })
 
-static const Clay_Color C_BG        = COL(0x14, 0x16, 0x1a, 255);
-static const Clay_Color C_CARD      = COL(0x1c, 0x1f, 0x25, 255);
-static const Clay_Color C_FIELD     = COL(0x14, 0x16, 0x1a, 255);
-static const Clay_Color C_LINE      = COL(0x2b, 0x30, 0x39, 255);
+static const Clay_Color C_BG        = COL(0x0f, 0x0f, 0x0f, 255);
+static const Clay_Color C_CARD      = COL(0x20, 0x20, 0x20, 255);
+static const Clay_Color C_FIELD     = COL(0x0f, 0x0f, 0x0f, 255);
+static const Clay_Color C_LINE      = COL(0x4f, 0x4f, 0x4f, 255);
+
+/* Container outlines used to be drawn in C_LINE, which read as a grid of
+   thin lines over the whole window. Kept as a named colour rather than
+   deleting every border, so one value brings them back. */
+static const Clay_Color C_BORDER    = COL(0x00, 0x00, 0x00, 0);
+static const Clay_Color C_SELECT    = COL(0x2d, 0x4f, 0x8f, 255);
 static const Clay_Color C_FG        = COL(0xe7, 0xe9, 0xee, 255);
 static const Clay_Color C_MUTED     = COL(0x9a, 0xa1, 0xb1, 255);
 static const Clay_Color C_ACCENT    = COL(0x5b, 0x8c, 0xff, 255);
@@ -78,6 +85,28 @@ static void ui_on_fader_change(int id, int value, void *user)
 #define LOG_ROW_H    16
 
 static Font s_fonts[FONT_COUNT];
+
+/* Refresh rate the loop is running at, for the debug counter to judge by. */
+static int s_target_fps = UI_FALLBACK_FPS;
+
+/*
+ * Height the faders get. The design heights are quoted for a full-size track,
+ * so whatever they allot beyond it is the rest of the interface; the strip
+ * takes what is left of the real window and is clamped to a usable range.
+ */
+static int ui_fader_height(bool debug)
+{
+    int chrome = UI_WINDOW_HEIGHT_FOR(debug) - FADER_TRACK_HEIGHT;
+    int available = GetScreenHeight() - chrome;
+
+    if (available > FADER_TRACK_HEIGHT) {
+        available = FADER_TRACK_HEIGHT;
+    }
+    if (available < FADER_MIN_HEIGHT) {
+        available = FADER_MIN_HEIGHT;
+    }
+    return available;
+}
 
 static Texture2D s_wheel;
 static float     s_wheel_val = -1.0f;
@@ -150,7 +179,7 @@ static bool ui_button(Clay_ElementId id, const char *label, bool primary,
         .backgroundColor = mix(fill, primary ? C_ACCENT_HI : C_LINE,
                                enabled && Clay_Hovered()),
         .cornerRadius = CLAY_CORNER_RADIUS(8),
-        .border = { .color = C_LINE, .width = { 1, 1, 1, 1 } },
+        .border = { .color = C_BORDER, .width = { 1, 1, 1, 1 } },
     }) {
         hit = clicked(enabled);
         CLAY_TEXT(dyn(label), CLAY_TEXT_CONFIG({
@@ -176,7 +205,7 @@ static bool ui_checkbox(Clay_ElementId id, const char *label, bool *value)
             .layout = { .sizing = { CLAY_SIZING_FIXED(14), CLAY_SIZING_FIXED(14) } },
             .backgroundColor = *value ? C_ACCENT : C_FIELD,
             .cornerRadius = CLAY_CORNER_RADIUS(4),
-            .border = { .color = C_LINE, .width = { 1, 1, 1, 1 } },
+            .border = { .color = C_BORDER, .width = { 1, 1, 1, 1 } },
         }) {}
 
         CLAY_TEXT(dyn(label), CLAY_TEXT_CONFIG({
@@ -206,7 +235,7 @@ static void ui_text_field(Clay_ElementId id, char *buffer, size_t cap,
         },
         .backgroundColor = C_FIELD,
         .cornerRadius = CLAY_CORNER_RADIUS(8),
-        .border = { .color = focused ? C_ACCENT : C_LINE, .width = { 1, 1, 1, 1 } },
+        .border = { .color = focused ? C_ACCENT : C_BORDER, .width = { 1, 1, 1, 1 } },
     }) {
         if (Clay_Hovered() && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
             s_focus = buffer;
@@ -439,7 +468,7 @@ static void ui_card_title(const char *title)
         },                                                                   \
         .backgroundColor = C_CARD,                                           \
         .cornerRadius = CLAY_CORNER_RADIUS(12),                              \
-        .border = { .color = C_LINE, .width = { 1, 1, 1, 1 } },              \
+        .border = { .color = C_BORDER, .width = { 1, 1, 1, 1 } },              \
     })
 
 static Clay_Color log_colour(app_log_kind_t kind)
@@ -458,10 +487,10 @@ static Clay_Color log_colour(app_log_kind_t kind)
 #define MENU_WIDTH    190.0f
 #define MENU_ITEM_H   32.0f
 #define MENU_PAD      6.0f
-#define MENU_ITEMS    2
+#define MENU_ITEMS    3
 
 static const char *const s_menu_items[MENU_ITEMS] = {
-    "Save config", "Load config",
+    "Save config", "Load config", "Reload config",
 };
 
 static Rectangle ui_menu_rect(Clay_BoundingBox button)
@@ -565,6 +594,13 @@ static void ui_menu_save_config(app_t *app)
         return;
     }
     app_config_save_as(app, path);
+}
+
+/* Re-reads whichever file the configuration last came from, so an edit made
+   outside the program can be picked up without restarting it. */
+static void ui_menu_reload_config(app_t *app)
+{
+    app_config_reload(app);
 }
 
 static void ui_menu_load_config(app_t *app)
@@ -738,6 +774,277 @@ static void ui_autoscroll_log(const app_t *app, Clay_ElementId id)
     stick = at_bottom;
 }
 
+/* ------------------------------------------------------- log selection --- */
+
+#define LOG_LINE_PITCH  (LOG_ROW_H + 1.0f)   /* row height plus the childGap */
+#define LOG_PAD         8.0f
+#define LOG_BAR_W       8.0f
+
+/* Inclusive range of selected lines; -1 when nothing is selected. */
+static int   s_log_from = -1;
+static int   s_log_to   = -1;
+static bool  s_log_selecting;
+static bool  s_bar_dragging;
+static float s_bar_grab;        /* pointer offset inside the thumb, in pixels */
+
+static bool log_line_selected(int index)
+{
+    if (s_log_from < 0 || s_log_to < 0) {
+        return false;
+    }
+
+    int lo = (s_log_from < s_log_to) ? s_log_from : s_log_to;
+    int hi = (s_log_from < s_log_to) ? s_log_to : s_log_from;
+    return index >= lo && index <= hi;
+}
+
+/* Geometry of the scrollbar track, or a zero-width rectangle when the content
+   fits and no bar is needed. */
+static Rectangle log_bar_track(Clay_BoundingBox box, float overflow)
+{
+    if (overflow <= 0.0f) {
+        return (Rectangle){ 0, 0, 0, 0 };
+    }
+    return (Rectangle){ box.x + box.width - LOG_BAR_W - 4.0f,
+                        box.y + 4.0f,
+                        LOG_BAR_W,
+                        box.height - 8.0f };
+}
+
+static Rectangle log_bar_thumb(Rectangle track, float overflow,
+                               float content_h, float view_h, float scroll_y)
+{
+    float ratio = (content_h > 0.0f) ? view_h / content_h : 1.0f;
+    float h = track.height * ratio;
+
+    if (h < 24.0f) {
+        h = 24.0f;
+    }
+    if (h > track.height) {
+        h = track.height;
+    }
+
+    float progress = (overflow > 0.0f) ? (-scroll_y) / overflow : 0.0f;
+    progress = fminf(fmaxf(progress, 0.0f), 1.0f);
+
+    return (Rectangle){ track.x, track.y + progress * (track.height - h),
+                        track.width, h };
+}
+
+/* Copy the selected lines, oldest first, one per line. */
+static void ui_log_copy(const app_t *app)
+{
+    if (s_log_from < 0 || app->log_count <= 0) {
+        return;
+    }
+
+    int lo = (s_log_from < s_log_to) ? s_log_from : s_log_to;
+    int hi = (s_log_from < s_log_to) ? s_log_to : s_log_from;
+
+    if (lo < 0) {
+        lo = 0;
+    }
+    if (hi >= app->log_count) {
+        hi = app->log_count - 1;
+    }
+
+    size_t need = 1;
+    for (int i = lo; i <= hi; i++) {
+        need += strlen(app_log_at(app, i)->text) + 1;
+    }
+
+    char *text = malloc(need);
+    if (text == NULL) {
+        return;
+    }
+    text[0] = '\0';
+
+    for (int i = lo; i <= hi; i++) {
+        strcat(text, app_log_at(app, i)->text);
+        if (i < hi) {
+            strcat(text, "\n");
+        }
+    }
+
+    SetClipboardText(text);
+    free(text);
+}
+
+/*
+ * Scrollbar dragging and line selection, both against the box Clay recorded
+ * last frame. Runs before Clay_BeginLayout(), so the highlight drawn this
+ * frame reflects the pointer as it is now.
+ */
+static void ui_log_interact(const app_t *app)
+{
+    if (!app->debug) {
+        return;
+    }
+
+    Clay_ElementData panel = Clay_GetElementData(CLAY_ID("LogScroll"));
+    Clay_ScrollContainerData sc = Clay_GetScrollContainerData(CLAY_ID("LogScroll"));
+
+    if (!panel.found || !sc.found || sc.scrollPosition == NULL) {
+        return;
+    }
+
+    Clay_BoundingBox box = panel.boundingBox;
+    float content_h = sc.contentDimensions.height;
+    float view_h = sc.scrollContainerDimensions.height;
+    float overflow = content_h - view_h;
+
+    if (overflow < 0.0f) {
+        overflow = 0.0f;
+    }
+
+    Vector2 mouse = GetMousePosition();
+    Rectangle track = log_bar_track(box, overflow);
+    Rectangle thumb = log_bar_thumb(track, overflow, content_h, view_h,
+                                    sc.scrollPosition->y);
+
+    /* --- scrollbar ---------------------------------------------------- */
+    if (!IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
+        s_bar_dragging = false;
+    }
+
+    if (track.width > 0.0f && IsMouseButtonPressed(MOUSE_BUTTON_LEFT) &&
+        CheckCollisionPointRec(mouse, track)) {
+        if (CheckCollisionPointRec(mouse, thumb)) {
+            s_bar_dragging = true;
+            s_bar_grab = mouse.y - thumb.y;
+        } else {
+            /* Clicking the track jumps so the thumb centres on the pointer. */
+            float span = track.height - thumb.height;
+            float progress = (span > 0.0f)
+                           ? (mouse.y - track.y - thumb.height / 2.0f) / span
+                           : 0.0f;
+            progress = fminf(fmaxf(progress, 0.0f), 1.0f);
+            sc.scrollPosition->y = -progress * overflow;
+        }
+        return;         /* the press belongs to the bar, not to the text */
+    }
+
+    if (s_bar_dragging) {
+        float span = track.height - thumb.height;
+        float progress = (span > 0.0f)
+                       ? (mouse.y - s_bar_grab - track.y) / span
+                       : 0.0f;
+        progress = fminf(fmaxf(progress, 0.0f), 1.0f);
+        sc.scrollPosition->y = -progress * overflow;
+        return;
+    }
+
+    /* --- selection ----------------------------------------------------- */
+    bool inside = CheckCollisionPointRec(mouse, (Rectangle){
+        box.x, box.y, box.width, box.height });
+
+    /* Row tops are laid out from the padded top, shifted by the scroll. */
+    float local = mouse.y - box.y - LOG_PAD - sc.scrollPosition->y;
+    int line = (int)(local / LOG_LINE_PITCH);
+
+    if (line < 0) {
+        line = 0;
+    }
+    if (line >= app->log_count) {
+        line = app->log_count - 1;
+    }
+
+    if (inside && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+        if (app->log_count > 0) {
+            s_log_selecting = true;
+            s_log_from = line;
+            s_log_to = line;
+        } else {
+            s_log_from = s_log_to = -1;
+        }
+    } else if (s_log_selecting && IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
+        s_log_to = line;
+    }
+
+    if (!IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
+        s_log_selecting = false;
+    }
+
+    bool ctrl = IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL);
+
+    if (ctrl && IsKeyPressed(KEY_A) && app->log_count > 0) {
+        s_log_from = 0;
+        s_log_to = app->log_count - 1;
+    }
+    if (ctrl && IsKeyPressed(KEY_C)) {
+        ui_log_copy(app);
+    }
+}
+
+/*
+ * Frame rate, for judging whether the interface is keeping up with the panel.
+ * Tinted against the refresh rate so a drop is visible without reading it.
+ */
+static void ui_draw_fps(const app_t *app)
+{
+    if (!app->debug) {
+        return;
+    }
+
+    int fps = GetFPS();
+
+    char text[32];
+    snprintf(text, sizeof(text), "%d FPS", fps);
+
+    const float size = 14.0f;
+    Vector2 measured = MeasureTextEx(s_fonts[FONT_MONO], text, size, 0.0f);
+    Rectangle box = { 6.0f, 6.0f, measured.x + 12.0f, measured.y + 8.0f };
+
+    Color tint;
+    if (fps >= (s_target_fps * 9) / 10) {
+        tint = (Color){ 0x4e, 0xcb, 0x84, 255 };        /* holding the clock */
+    } else if (fps >= s_target_fps / 2) {
+        tint = (Color){ 0xe8, 0xa3, 0x4a, 255 };        /* slipping */
+    } else {
+        tint = (Color){ 0xe8, 0x6a, 0x5a, 255 };        /* struggling */
+    }
+
+    /* Its own backing, since it floats over whatever is underneath. */
+    DrawRectangleRounded(box, 0.35f, 6, (Color){ 0x00, 0x00, 0x00, 170 });
+    DrawTextEx(s_fonts[FONT_MONO], text,
+               (Vector2){ box.x + 6.0f, box.y + 4.0f }, size, 0.0f, tint);
+}
+
+/* Drawn after Clay, so the bar sits over the text rather than under it. */
+static void ui_log_draw_scrollbar(const app_t *app)
+{
+    if (!app->debug) {
+        return;
+    }
+
+    Clay_ElementData panel = Clay_GetElementData(CLAY_ID("LogScroll"));
+    Clay_ScrollContainerData sc = Clay_GetScrollContainerData(CLAY_ID("LogScroll"));
+
+    if (!panel.found || !sc.found || sc.scrollPosition == NULL) {
+        return;
+    }
+
+    float content_h = sc.contentDimensions.height;
+    float view_h = sc.scrollContainerDimensions.height;
+    float overflow = content_h - view_h;
+
+    if (overflow <= 0.0f) {
+        return;         /* everything fits, so no bar */
+    }
+
+    Rectangle track = log_bar_track(panel.boundingBox, overflow);
+    Rectangle thumb = log_bar_thumb(track, overflow, content_h, view_h,
+                                    sc.scrollPosition->y);
+
+    Vector2 mouse = GetMousePosition();
+    bool hot = s_bar_dragging || CheckCollisionPointRec(mouse, track);
+
+    DrawRectangleRounded(track, 1.0f, 6, (Color){ 0x2a, 0x2a, 0x2a, 255 });
+    DrawRectangleRounded(thumb, 1.0f, 6,
+                         hot ? (Color){ 0x8a, 0x8a, 0x8a, 255 }
+                             : (Color){ 0x6a, 0x6a, 0x6a, 255 });
+}
+
 /* ----------------------------------------------------------------- run --- */
 
 int ui_run(app_t *app)
@@ -773,7 +1080,7 @@ int ui_run(app_t *app)
 
     /* The layout stops being readable below its design size, so make that the
        floor rather than letting the cards collapse. */
-    SetWindowMinSize(UI_WINDOW_WIDTH, window_h);
+    SetWindowMinSize(UI_WINDOW_MIN_WIDTH, UI_WINDOW_MIN_HEIGHT);
 
     /*
      * Escape must not end the program: it cancels the rename editor, and with
@@ -782,20 +1089,15 @@ int ui_run(app_t *app)
     SetExitKey(KEY_NULL);
 
     /*
-     * Follow the monitor, but never drop below UI_MIN_FPS. Vsync cannot exceed
-     * the refresh rate, so on a slower panel it has to be turned off for the
-     * higher target to have any effect.
+     * Run at the panel's refresh rate, with vsync left on. Presenting on the
+     * refresh boundary is what makes motion even; a target above it can only
+     * tear, and one below it drops frames.
      */
-    int refresh_hz = GetMonitorRefreshRate(GetCurrentMonitor());
-    if (refresh_hz <= 0) {
-        refresh_hz = 60;        /* driver did not report one */
+    s_target_fps = GetMonitorRefreshRate(GetCurrentMonitor());
+    if (s_target_fps <= 0) {
+        s_target_fps = UI_FALLBACK_FPS;     /* driver did not report one */
     }
-
-    int target_fps = (refresh_hz >= UI_MIN_FPS) ? refresh_hz : UI_MIN_FPS;
-    if (target_fps > refresh_hz) {
-        ClearWindowState(FLAG_VSYNC_HINT);
-    }
-    SetTargetFPS(target_fps);
+    SetTargetFPS(s_target_fps);
 
     /*
      * Window icon. raylib has no .ico loader, so the PNG beside it is what gets
@@ -863,6 +1165,10 @@ int ui_run(app_t *app)
     unsigned long slider_extern_seen = 0;
     double slider_locked_until = 0.0;
 
+    /* Per fader, so only the one the device is actually moving recolours. */
+    unsigned long slider_seen_at[APP_FADER_COUNT] = { 0 };
+    double slider_device_until[APP_FADER_COUNT] = { 0.0 };
+
     /* Loading a configuration can flip "debug", which adds or removes the
        traffic console and so changes the height the layout needs. */
     bool debug_seen = app->debug;
@@ -884,6 +1190,12 @@ int ui_run(app_t *app)
 
         if (tray_poll()) {      /* "Close IOMeeter" from the tray menu */
             break;
+        }
+
+        /* Somebody launched IOMeeter again: surface instead of ignoring it. */
+        if (instance_show_requested()) {
+            tray_restore();
+            instance_raise(GetWindowHandle());
         }
 
         if (tray_available() && !tray_is_minimized() && IsWindowMinimized()) {
@@ -909,7 +1221,7 @@ int ui_run(app_t *app)
         if (app->debug != debug_seen) {
             debug_seen = app->debug;
             window_h = UI_WINDOW_HEIGHT_FOR(app->debug);
-            SetWindowMinSize(UI_WINDOW_WIDTH, window_h);
+            SetWindowMinSize(UI_WINDOW_MIN_WIDTH, UI_WINDOW_MIN_HEIGHT);
             SetWindowSize(GetScreenWidth(), window_h);
         }
 
@@ -963,6 +1275,9 @@ int ui_run(app_t *app)
                     } else if (item == 1) {
                         s_menu_open = false;
                         ui_menu_load_config(app);
+                    } else if (item == 2) {
+                        s_menu_open = false;
+                        ui_menu_reload_config(app);
                     } else if (!over_button) {
                         s_menu_open = false;   /* clicked away */
                     }
@@ -974,6 +1289,10 @@ int ui_run(app_t *app)
 
         /* Interaction against the previous frame's boxes, before laying out
            the next one. */
+        ui_log_interact(app);
+
+        float fader_h = (float)ui_fader_height(app->debug);
+
         bool colour_changed = false;
         Clay_ElementData wheel_data = Clay_GetElementData(wheel_id);
         if (wheel_data.found && !menu_blocks) {
@@ -982,6 +1301,15 @@ int ui_run(app_t *app)
         if (app->slider_extern_seq != slider_extern_seen) {
             slider_extern_seen = app->slider_extern_seq;
             slider_locked_until = GetTime() + 0.5;
+        }
+
+        /* Held briefly past the last packet so the colour does not flicker
+           between updates while the hardware fader is being moved. */
+        for (int i = 0; i < APP_FADER_COUNT; i++) {
+            if (app->slider_extern_at[i] != slider_seen_at[i]) {
+                slider_seen_at[i] = app->slider_extern_at[i];
+                slider_device_until[i] = GetTime() + 0.5;
+            }
         }
         bool sliders_locked = GetTime() < slider_locked_until;
 
@@ -1027,7 +1355,7 @@ int ui_run(app_t *app)
         CLAY(CLAY_ID("Root"), {
             .layout = {
                 .sizing = { CLAY_SIZING_GROW(0), CLAY_SIZING_GROW(0) },
-                .padding = CLAY_PADDING_ALL(14),
+                .padding = { 15, 15, 20, 20 },      /* left, right, top, bottom */
                 .childGap = 12,
                 .layoutDirection = CLAY_TOP_TO_BOTTOM,
             },
@@ -1054,7 +1382,7 @@ int ui_run(app_t *app)
                     .backgroundColor = (s_menu_open || Clay_Hovered())
                                      ? C_LINE : C_CARD,
                     .cornerRadius = CLAY_CORNER_RADIUS(8),
-                    .border = { .color = C_LINE, .width = { 1, 1, 1, 1 } },
+                    .border = { .color = C_BORDER, .width = { 1, 1, 1, 1 } },
                 }) {
                     if (clicked(true)) {
                         s_menu_open = !s_menu_open;
@@ -1074,9 +1402,6 @@ int ui_run(app_t *app)
                     CLAY_TEXT(CLAY_STRING("IOMeeter"),
                               CLAY_TEXT_CONFIG({ .fontId = FONT_BODY, .fontSize = 20,
                                                  .textColor = C_FG }));
-                    CLAY_TEXT(CLAY_STRING("ESP32-S3 - vendor interface over libusb"),
-                              CLAY_TEXT_CONFIG({ .fontId = FONT_BODY, .fontSize = 13,
-                                                 .textColor = C_MUTED }));
                 }
 
                 CLAY_AUTO_ID({ .layout = { .sizing = { CLAY_SIZING_GROW(0) } } }) {}
@@ -1084,7 +1409,7 @@ int ui_run(app_t *app)
                 CLAY_AUTO_ID({
                     .layout = { .padding = { 10, 10, 6, 6 } },
                     .cornerRadius = CLAY_CORNER_RADIUS(999),
-                    .border = { .color = C_LINE, .width = { 1, 1, 1, 1 } },
+                    .border = { .color = C_BORDER, .width = { 1, 1, 1, 1 } },
                 }) {
                     CLAY_TEXT(dyn(app->connected ? "connected" : "disconnected"),
                               CLAY_TEXT_CONFIG({
@@ -1156,7 +1481,7 @@ int ui_run(app_t *app)
                                                            (rgb >> 8) & 0xFF,
                                                            rgb & 0xFF, 255),
                                     .cornerRadius = CLAY_CORNER_RADIUS(8),
-                                    .border = { .color = C_LINE, .width = { 1, 1, 1, 1 } },
+                                    .border = { .color = C_BORDER, .width = { 1, 1, 1, 1 } },
                                 }) {}
 
                                 ui_text_field(CLAY_ID("HexField"), app->hex,
@@ -1204,7 +1529,7 @@ int ui_run(app_t *app)
                                 CLAY(CLAY_IDI("Fader", i), {
                                     .layout = { .sizing = {
                                         CLAY_SIZING_FIXED(FADER_SLOT_WIDTH),
-                                        CLAY_SIZING_FIXED(FADER_SLOT_HEIGHT) } },
+                                        CLAY_SIZING_FIXED(fader_h) } },
                                 }) {}
 
                                 if (ui_button(CLAY_IDI("AddApp", i), "+",
@@ -1278,45 +1603,6 @@ int ui_run(app_t *app)
                         }
                     }
                 }
-
-                CLAY_AUTO_ID({
-                    .layout = {
-                        .sizing = { CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0) },
-                        .childGap = 12,
-                        .layoutDirection = CLAY_TOP_TO_BOTTOM,
-                    },
-                }) {
-                    UI_CARD(CLAY_ID("MessageCard")) {
-                        ui_card_title("MESSAGE");
-
-                        bool submitted = false;
-                        ui_text_field(CLAY_ID("MessageField"), app->message,
-                                      APP_MESSAGE_MAX, FONT_BODY, &submitted);
-
-                        if (ui_button(CLAY_ID("SendMsg"), "Send", true,
-                                      app->connected, true) || submitted) {
-                            app_send_message(app);
-                        }
-                    }
-
-                    UI_CARD(CLAY_ID("ConfigCard")) {
-                        ui_card_title("DEVICE CONFIG");
-
-                        ui_text_field(CLAY_ID("ConfigField"), app->config,
-                                      APP_CONFIG_MAX, FONT_MONO, NULL);
-
-                        CLAY_AUTO_ID({ .layout = { .childGap = 8 } }) {
-                            if (ui_button(CLAY_ID("GetCfg"), "Get", false,
-                                          app->connected, false)) {
-                                app_get(app, "config");
-                            }
-                            if (ui_button(CLAY_ID("SetCfg"), "Set", true,
-                                          app->connected, true)) {
-                                app_set_config(app);
-                            }
-                        }
-                    }
-                }
             }
 
             /* ---- traffic ----
@@ -1348,9 +1634,12 @@ int ui_run(app_t *app)
                 }) {
                     for (int i = 0; i < app->log_count; i++) {
                         const app_log_entry_t *entry = app_log_at(app, i);
-                        CLAY_AUTO_ID({ .layout = { .sizing = {
-                                           CLAY_SIZING_GROW(0),
-                                           CLAY_SIZING_FIXED(LOG_ROW_H) } } }) {
+                        CLAY_AUTO_ID({
+                            .layout = { .sizing = { CLAY_SIZING_GROW(0),
+                                                    CLAY_SIZING_FIXED(LOG_ROW_H) } },
+                            .backgroundColor = log_line_selected(i)
+                                             ? C_SELECT : C_TRANSPARENT,
+                        }) {
                             CLAY_TEXT(dyn(entry->text), CLAY_TEXT_CONFIG({
                                 .fontId = FONT_MONO, .fontSize = 12,
                                 .textColor = log_colour(entry->kind) }));
@@ -1386,7 +1675,7 @@ int ui_run(app_t *app)
         }
 
         BeginDrawing();
-        ClearBackground((Color){ 0x14, 0x16, 0x1a, 255 });
+        ClearBackground((Color){ 0x0f, 0x0f, 0x0f, 255 });
         Clay_Raylib_Render(commands);
 
         Clay_ElementData wheel_now = Clay_GetElementData(wheel_id);
@@ -1398,11 +1687,14 @@ int ui_run(app_t *app)
         for (int i = 0; i < APP_FADER_COUNT; i++) {
             Clay_ElementData slot = Clay_GetElementData(CLAY_IDI("Fader", i));
             if (slot.found) {
-                fader_draw(slot.boundingBox, app->sliders[i].value,
+                fader_draw(i, slot.boundingBox, app->sliders[i].value,
                            APP_FADER_MAX, app->sliders[i].name,
-                           &s_fonts[FONT_BODY]);
+                           &s_fonts[FONT_BODY],
+                           GetTime() < slider_device_until[i]);
             }
         }
+
+        ui_log_draw_scrollbar(app);
 
         if (s_rename >= 0) {
             Clay_ElementData slot = Clay_GetElementData(CLAY_IDI("Fader", s_rename));
@@ -1417,6 +1709,8 @@ int ui_run(app_t *app)
         if (s_menu_open && menu_panel.width > 0.0f) {
             ui_draw_menu(menu_panel);
         }
+
+        ui_draw_fps(app);
 
         EndDrawing();
     }

@@ -6,7 +6,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "jsoncmd.h"
+#include "cJSON.h"
 #include "mixer.h"
 #include "proto.h"
 #include "usbdev.h"
@@ -137,6 +137,7 @@ bool app_config_save_as(app_t *a, const char *path)
         return false;
     }
 
+    snprintf(a->config_path, sizeof(a->config_path), "%s", path);
     app_log(a, APP_LOG_EVENT, "saved %s", path);
     return true;
 }
@@ -151,9 +152,28 @@ bool app_config_load_from(app_t *a, const char *path)
         return false;
     }
 
+    snprintf(a->config_path, sizeof(a->config_path), "%s", path);
     app_log(a, APP_LOG_EVENT, "loaded %s", path);
     a->config_dirty = true;     /* mirror it into the working config.json */
     return true;
+}
+
+bool app_config_reload(app_t *a)
+{
+    char path[CONFIG_PATH_MAX];
+
+    /* app_config_load_from writes config_path, so it cannot be read from
+       the struct while that call is in progress. */
+    snprintf(path, sizeof(path), "%s",
+             a->config_path[0] ? a->config_path : APP_CONFIG_PATH);
+
+    bool ok = app_config_load_from(a, path);
+    if (ok) {
+        for (int i = 0; i < APP_FADER_COUNT; i++) {
+            app_apply_volume(a, i);
+        }
+    }
+    return ok;
 }
 
 void app_notify(app_t *a, const char *text)
@@ -190,6 +210,7 @@ void app_init(app_t *a)
     snprintf(a->message, sizeof(a->message), "This is a test");
     app_sync_hex(a);
 
+    snprintf(a->config_path, sizeof(a->config_path), "%s", APP_CONFIG_PATH);
     app_config_load(a);
 
     if (mixer_init()) {
@@ -234,6 +255,10 @@ bool app_connect(app_t *a)
     }
 
     a->connected = true;
+
+    /* Anything half-received from a previous session is meaningless now. */
+    proto_framer_reset(&a->framer);
+
     app_log(a, APP_LOG_EVENT, "connected: interface %d, OUT 0x%02X, IN 0x%02X",
             a->dev->interface, a->dev->ep_out, a->dev->ep_in);
     return true;
@@ -266,95 +291,108 @@ void app_send_json(app_t *a, const char *json)
 
 static void app_handle_packet(app_t *a, const unsigned char *data, int len)
 {
-    switch (proto_classify(data, len)) {
-    case PROTO_INTERRUPT: {
+    proto_kind_t kind = proto_classify(data, len);
+
+    if (kind == PROTO_EVENT) {
+        app_log(a, APP_LOG_EVENT, "<- %.*s", len, (const char *)data);
+        return;
+    }
+
+    /* Parsed once, up front. The packet is not NUL terminated, hence the
+       length-taking entry point. */
+    cJSON *root = cJSON_ParseWithLength((const char *)data, (size_t)len);
+    if (root == NULL) {
+        app_log(a, APP_LOG_ERROR, "unparsable packet: %.*s", len,
+                (const char *)data);
+        return;
+    }
+
+    if (kind == PROTO_INTERRUPT) {
         app_log(a, APP_LOG_EVENT, "<- %.*s", len, (const char *)data);
 
-        const char *message = jsoncmd_find_string(data, len, "message");
-        if (message && message[0]) {
-            app_notify(a, message);
+        const cJSON *report = cJSON_GetObjectItemCaseSensitive(root, "interrupt");
+        const cJSON *message = cJSON_GetObjectItemCaseSensitive(report, "message");
+
+        if (cJSON_IsString(message) && message->valuestring &&
+            message->valuestring[0]) {
+            app_notify(a, message->valuestring);
         } else {
             app_notify(a, "interrupt");
         }
+
+        cJSON_Delete(root);
         return;
     }
 
-    case PROTO_EVENT:
-        app_log(a, APP_LOG_EVENT, "<- %.*s", len, (const char *)data);
-        return;
+    /* {"get":{"slider":{"id":N}}} -- the device is asking for a slider's state.
+       Checked first because a get and a set both carry a "slider" object. */
+    const cJSON *get = cJSON_GetObjectItemCaseSensitive(root, "get");
+    if (get != NULL) {
+        const cJSON *slider = cJSON_GetObjectItemCaseSensitive(get, "slider");
+        const cJSON *id = cJSON_GetObjectItemCaseSensitive(slider, "id");
 
-    case PROTO_REPLY:
-    default:
-        break;
-    }
-
-    /*
-     * {"get":{"slider":{"id":N}}} -- the device is asking for a slider's state.
-     * Checked first because a get and a set both carry a "slider" object, and
-     * the set branch below would otherwise claim it.
-     *
-     * The object is copied out: jsoncmd_find_object returns a static buffer, so
-     * looking inside it with the same helper would clobber the outer result.
-     */
-    const char *get_obj = jsoncmd_find_object(data, len, "get");
-    if (get_obj) {
-        char request[160];
-        snprintf(request, sizeof(request), "%s", get_obj);
-
-        const char *slider_at = strstr(request, "\"slider\"");
-        const char *id_at = slider_at ? strstr(slider_at, "\"id\"") : NULL;
-        const char *colon = id_at ? strchr(id_at, ':') : NULL;
-
-        if (colon) {
-            app_reply_slider(a, atoi(colon + 1));
+        if (cJSON_IsNumber(id)) {
+            app_reply_slider(a, id->valueint);
         } else {
             app_log(a, APP_LOG_ERROR, "unsupported get: %.*s", len,
                     (const char *)data);
         }
+
+        cJSON_Delete(root);
         return;
+    }
+
+    app_log(a, APP_LOG_RX, "<- %.*s", len, (const char *)data);
+
+    /* Commands arrive wrapped in "set"; answers to a get come back bare, so
+       both shapes are accepted. */
+    const cJSON *body = cJSON_GetObjectItemCaseSensitive(root, "set");
+    if (body == NULL) {
+        body = root;
     }
 
     /* {"set":{"slider":{"id":N,"value":V}}} -- the device moved one of its own
        sliders, so mirror it and let the UI lock the pointer out briefly. */
-    app_log(a, APP_LOG_RX, "<- %.*s", len, (const char *)data);
+    const cJSON *slider = cJSON_GetObjectItemCaseSensitive(body, "slider");
+    if (slider != NULL) {
+        const cJSON *id = cJSON_GetObjectItemCaseSensitive(slider, "id");
+        const cJSON *value = cJSON_GetObjectItemCaseSensitive(slider, "value");
 
-    const char *slider = jsoncmd_find_object(data, len, "slider");
-    if (slider) {
-        /* Scanned rather than pattern-matched, so whitespace and key order in
-           the incoming object do not matter. */
-        const char *id_at = strstr(slider, "\"id\"");
-        const char *value_at = strstr(slider, "\"value\"");
-        int id = id_at ? atoi(strchr(id_at, ':') + 1) : -1;
-        int value = value_at ? atoi(strchr(value_at, ':') + 1) : 0;
-
-        if (id_at && value_at && id >= 0 && id < APP_FADER_COUNT) {
-            a->sliders[id].value = value;
+        if (cJSON_IsNumber(id) && cJSON_IsNumber(value) &&
+            id->valueint >= 0 && id->valueint < APP_FADER_COUNT) {
+            a->sliders[id->valueint].value = value->valueint;
             a->slider_extern_seq++;
+            a->slider_extern_at[id->valueint]++;
             /* Coalesced: a physical fader sends far faster than the frame rate,
                and each push reaches the audio session graph. */
-            a->slider_volume_dirty[id] = true;
+            a->slider_volume_dirty[id->valueint] = true;
         }
+
+        cJSON_Delete(root);
         return;
     }
 
-    const char *led = jsoncmd_find_string(data, len, "led");
-    if (led) {
+    const cJSON *led = cJSON_GetObjectItemCaseSensitive(body, "led");
+    if (cJSON_IsString(led) && led->valuestring) {
         unsigned rgb;
-        if (sscanf(led, "%6x", &rgb) == 1) {
+        if (sscanf(led->valuestring, "%6x", &rgb) == 1) {
             app_set_rgb(a, rgb);
         }
+
+        cJSON_Delete(root);
         return;
     }
 
-    const char *config = jsoncmd_find_object(data, len, "config");
-    if (config) {
-        size_t n = strlen(config);
-        if (n >= sizeof(a->config)) {
-            n = sizeof(a->config) - 1;
+    const cJSON *config = cJSON_GetObjectItemCaseSensitive(body, "config");
+    if (config != NULL) {
+        char *text = cJSON_PrintUnformatted(config);
+        if (text != NULL) {
+            snprintf(a->config, sizeof(a->config), "%s", text);
+            cJSON_free(text);
         }
-        memcpy(a->config, config, n);
-        a->config[n] = '\0';
     }
+
+    cJSON_Delete(root);
 }
 
 /* One volume push per slider per poll, however many packets arrived. */
@@ -366,6 +404,12 @@ static void apply_dirty_volumes(app_t *a)
             app_apply_volume(a, i);
         }
     }
+}
+
+/* Trampoline: the framer hands back one message at a time. */
+static void app_on_message(void *user, const unsigned char *msg, int len)
+{
+    app_handle_packet((app_t *)user, msg, len);
 }
 
 void app_poll(app_t *a)
@@ -394,7 +438,9 @@ void app_poll(app_t *a)
             return;         /* transient; try again next frame */
         }
         if (len > 0) {
-            app_handle_packet(a, buf, len);
+            /* One read is not one message: WinUSB in particular returns
+               several concatenated, and can split a long one in half. */
+            proto_framer_push(&a->framer, buf, len, app_on_message, a);
         }
     }
 
@@ -460,6 +506,21 @@ void app_apply_volume(app_t *a, int id)
     a->slider_unmatched[id] = unmatched;
 }
 
+/* Serialise @p root, send it, and dispose of it either way. */
+static void app_send_cjson(app_t *a, cJSON *root, const char *what)
+{
+    char *text = (root != NULL) ? cJSON_PrintUnformatted(root) : NULL;
+    cJSON_Delete(root);
+
+    if (text == NULL) {
+        app_log(a, APP_LOG_ERROR, "could not build the %s command", what);
+        return;
+    }
+
+    app_send_json(a, text);
+    cJSON_free(text);
+}
+
 void app_reply_slider(app_t *a, int id)
 {
     if (id < 0 || id >= APP_FADER_COUNT) {
@@ -467,29 +528,32 @@ void app_reply_slider(app_t *a, int id)
         return;
     }
 
-    char json[APP_MESSAGE_MAX + 96];
-    snprintf(json, sizeof(json),
-             "{\"set\":{\"slider\":{\"id\":%d,\"value\":%d,\"name\":\"",
-             id, a->sliders[id].value);
+    cJSON *root = cJSON_CreateObject();
+    cJSON *set = (root != NULL) ? cJSON_AddObjectToObject(root, "set") : NULL;
+    cJSON *slider = (set != NULL) ? cJSON_AddObjectToObject(set, "slider") : NULL;
 
-    if (!jsoncmd_escape_append(json, sizeof(json), a->sliders[id].name) ||
-        !jsoncmd_append(json, sizeof(json), "\",\"update\":") ||
-        !jsoncmd_append(json, sizeof(json),
-                        a->slider_pending[id] ? "true" : "false") ||
-        !jsoncmd_append(json, sizeof(json), "}}}")) {
-        app_log(a, APP_LOG_ERROR, "slider reply too long");
-        return;
+    if (slider == NULL ||
+        cJSON_AddNumberToObject(slider, "id", id) == NULL ||
+        cJSON_AddNumberToObject(slider, "value", a->sliders[id].value) == NULL ||
+        cJSON_AddStringToObject(slider, "name", a->sliders[id].name) == NULL ||
+        cJSON_AddBoolToObject(slider, "update", a->slider_pending[id]) == NULL) {
+        cJSON_Delete(root);
+        root = NULL;
     }
 
-    app_send_json(a, json);
+    app_send_cjson(a, root, "slider");
     a->slider_pending[id] = false;
 }
 
 void app_get(app_t *a, const char *what)
 {
-    char json[64];
-    snprintf(json, sizeof(json), "{\"get\":\"%s\"}", what);
-    app_send_json(a, json);
+    cJSON *root = cJSON_CreateObject();
+
+    if (root != NULL && cJSON_AddStringToObject(root, "get", what) == NULL) {
+        cJSON_Delete(root);
+        root = NULL;
+    }
+    app_send_cjson(a, root, "get");
 }
 
 void app_send_message(app_t *a)
@@ -498,14 +562,14 @@ void app_send_message(app_t *a)
         return;
     }
 
-    char json[APP_MESSAGE_MAX * 2 + 32];
-    snprintf(json, sizeof(json), "{\"set\":{\"message\":\"");
-    if (!jsoncmd_escape_append(json, sizeof(json), a->message) ||
-        !jsoncmd_append(json, sizeof(json), "\"}}")) {
-        app_log(a, APP_LOG_ERROR, "message is too long");
-        return;
+    cJSON *root = cJSON_CreateObject();
+    cJSON *set = (root != NULL) ? cJSON_AddObjectToObject(root, "set") : NULL;
+
+    if (set == NULL || cJSON_AddStringToObject(set, "message", a->message) == NULL) {
+        cJSON_Delete(root);
+        root = NULL;
     }
-    app_send_json(a, json);
+    app_send_cjson(a, root, "message");
 }
 
 void app_set_config(app_t *a)
@@ -515,11 +579,22 @@ void app_set_config(app_t *a)
         return;
     }
 
-    char json[APP_CONFIG_MAX + 32];
-    int n = snprintf(json, sizeof(json), "{\"set\":{\"config\":%s}}", a->config);
-    if (n < 0 || n >= (int)sizeof(json)) {
-        app_log(a, APP_LOG_ERROR, "config is too long");
+    /* a->config holds the document the device sent back, so it is re-parsed
+       rather than spliced in as text. */
+    cJSON *config = cJSON_Parse(a->config);
+    if (config == NULL) {
+        app_log(a, APP_LOG_ERROR, "the stored config is not valid JSON");
         return;
     }
-    app_send_json(a, json);
+
+    cJSON *root = cJSON_CreateObject();
+    cJSON *set = (root != NULL) ? cJSON_AddObjectToObject(root, "set") : NULL;
+
+    if (set == NULL || !cJSON_AddItemToObject(set, "config", config)) {
+        cJSON_Delete(config);
+        cJSON_Delete(root);
+        root = NULL;
+    }
+    app_send_cjson(a, root, "config");
 }
+

@@ -5,6 +5,7 @@
 #   ./build.sh          configure if needed, compile, then run
 #   ./build.sh clear    clear the screen, compile, then run
 #   ./build.sh clean    wipe the build directory and reconfigure
+#   ./build.sh build    compile without running
 #   ./build.sh run      run without recompiling
 #   ./build.sh help     this text
 #
@@ -17,14 +18,15 @@
 # Talking to the device needs permission for the USB node. Install the udev
 # rule once, then unplug and replug the device:
 #
-#   sudo ./install-linux.sh --udev
+#   sudo ./install.sh --udev
 #
 # Do NOT run IOMeeter with sudo instead. That opens the device but cuts the
 # process off from the desktop session's sound server, so the audio mixer
 # reports itself unavailable and no volume is controlled.
 #
 # This builds and runs in place. To put IOMeeter in the application menu and
-# give it a proper icon in the panel, run ./install-linux.sh afterwards.
+# give it a proper icon in the panel, run ./install.sh afterwards, which
+# also installs it into ~/.IOMeeter.
 #
 set -uo pipefail
 
@@ -54,6 +56,7 @@ usage() {
     echo "  (none)   configure if needed, compile, then run"
     echo "  clear    clear the console, compile, then run"
     echo "  clean    wipe the build directory and reconfigure"
+    echo "  build    compile without running"
     echo "  run      run without recompiling"
     echo "  help     show this text"
 }
@@ -148,7 +151,7 @@ run() {
         echo >&2
         echo "If the device was found but could not be opened, install the" >&2
         echo "USB permission rule and replug the device:" >&2
-        echo "    sudo ./install-linux.sh --udev" >&2
+        echo "    sudo ./install.sh --udev" >&2
         echo "Do not use sudo to work around it: the audio mixer needs to run" >&2
         echo "as your own user." >&2
     fi
@@ -166,6 +169,11 @@ case "${1-}" in
         clear
         compile
         run
+        ;;
+    build)
+        # Compile without launching, which is what install.sh wants.
+        [ -f "$BUILD_DIR/CMakeCache.txt" ] || setup
+        compile
         ;;
     clean)
         setup
