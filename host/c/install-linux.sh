@@ -74,7 +74,11 @@ THEME_DIR="$PREFIX/share/icons/hicolor"
 ICON_DIR="$THEME_DIR/128x128/apps"
 DESKTOP_DIR="$PREFIX/share/applications"
 DESKTOP_FILE="$DESKTOP_DIR/IOMeeter.desktop"
-UDEV_RULE=/etc/udev/rules.d/99-iomeeter.rules
+# Must sort before systemd's 73-seat-late.rules, which is what turns the
+# uaccess tag into an ACL. A rule numbered above that sets the tag too late
+# for anything to read it.
+UDEV_RULE=/etc/udev/rules.d/60-iomeeter.rules
+UDEV_RULE_OLD=/etc/udev/rules.d/99-iomeeter.rules
 
 # The menu and the icon theme are both cached; without this the entry can take
 # until the next login to appear.
@@ -92,6 +96,32 @@ need_root() {
     [ "$PREFIX" = /usr/local ] && [ "$(id -u)" -ne 0 ]
 }
 
+# Print the device node's permissions, so a rule that did not take effect is
+# visible immediately instead of surfacing later as LIBUSB_ERROR_ACCESS.
+show_device_access() {
+    command -v lsusb >/dev/null 2>&1 || return 0
+
+    local line bus dev node
+    line=$(lsusb -d 303a:4001 2>/dev/null | head -1)
+    [ -n "$line" ] || { echo; echo "Device not plugged in, so nothing to check yet."; return 0; }
+
+    bus=$(printf '%s' "$line" | awk '{print $2}')
+    dev=$(printf '%s' "$line" | awk '{sub(/:/, "", $4); print $4}')
+    node="/dev/bus/usb/$bus/$dev"
+    [ -e "$node" ] || return 0
+
+    echo
+    echo "Device node $node:"
+    ls -l "$node"
+    if command -v getfacl >/dev/null 2>&1; then
+        if getfacl -p "$node" 2>/dev/null | grep -qE '^user:[^:]+:'; then
+            echo "An ACL for your user is present, so the rule worked."
+        else
+            echo "No user ACL yet -- replug the device, then check again."
+        fi
+    fi
+}
+
 if [ "$MODE" = udev ]; then
     if [ "$(id -u)" -ne 0 ]; then
         echo "Installing the udev rule needs root:" >&2
@@ -106,14 +136,19 @@ if [ "$MODE" = udev ]; then
 # Running IOMeeter under sudo is not an equivalent workaround: it opens the
 # device but cuts the process off from the session sound server, so the
 # audio mixer stops working.
-SUBSYSTEM=="usb", ATTR{idVendor}=="303a", ATTR{idProduct}=="4001", MODE="0660", TAG+="uaccess"
+#
+# uaccess gives an ACL to the user holding the active seat; the plugdev group
+# is the fallback for anything without a seat, such as an ssh session.
+SUBSYSTEM=="usb", ATTR{idVendor}=="303a", ATTR{idProduct}=="4001", MODE="0660", GROUP="plugdev", TAG+="uaccess"
 RULE
     chmod 644 "$UDEV_RULE"
+    rm -f "$UDEV_RULE_OLD"      # an earlier version installed it too late to work
     udevadm control --reload-rules && udevadm trigger
 
     echo "Installed $UDEV_RULE"
     echo "Unplug and replug the device for it to take effect."
     echo "IOMeeter can then be run WITHOUT sudo, which is what the mixer needs."
+    show_device_access
     exit 0
 fi
 
