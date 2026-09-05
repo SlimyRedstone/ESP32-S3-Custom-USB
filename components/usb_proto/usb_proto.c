@@ -64,12 +64,32 @@ static volatile bool      s_running;
 static uint32_t   s_idle_color;
 static TickType_t s_flash_until;
 static bool       s_flashing;
-static bool       s_was_mounted;
+static int        s_last_link = -1;   /*!< usb_link_t, or -1 before the first pass */
+
+/* How far the USB link has come, which is what the resting colour reflects. */
+typedef enum {
+    USB_LINK_DETACHED = 0,  /*!< no host at all; the bus is not powered   */
+    USB_LINK_ATTACHED,      /*!< powered and enumerating, but not usable  */
+    USB_LINK_READY,         /*!< configured; the endpoints can carry data */
+} usb_link_t;
 
 static void apply_led(uint32_t rgb)
 {
     if (s_cfg.status_led && s_cfg.on_led_command) {
         s_cfg.on_led_command(rgb);
+    }
+}
+
+static uint32_t link_color(usb_link_t link)
+{
+    switch (link) {
+    case USB_LINK_READY:
+        return s_cfg.led_connected;
+    case USB_LINK_ATTACHED:
+        return s_cfg.led_boot;
+    case USB_LINK_DETACHED:
+    default:
+        return s_cfg.led_disconnected;
     }
 }
 
@@ -597,17 +617,23 @@ static void dispatch_task(void *arg)
      * second writer.
      */
     while (s_running) {
-        const bool mounted = tud_vendor_mounted();
+        /*
+         * tud_connected() says the bus is powered and enumeration has begun;
+         * tud_ready() adds that the host has configured the device, so the
+         * endpoints can actually carry data. The three cases are distinct
+         * enough to be worth telling apart on the LED.
+         */
+        const usb_link_t link = !tud_connected() ? USB_LINK_DETACHED
+                              : tud_ready()      ? USB_LINK_READY
+                                                 : USB_LINK_ATTACHED;
 
-        /* USB became ready: show the connected colour and make it the resting
-           colour for later receive flashes. */
-        if (mounted != s_was_mounted) {
-            s_was_mounted = mounted;
-            if (mounted) {
-                s_idle_color = s_cfg.led_connected;
-                s_flashing = false;
-                apply_led(s_idle_color);
-            }
+        /* Only on a transition: an explicit LED command owns the colour in
+           between, and reasserting it every cycle would undo that. */
+        if ((int)link != s_last_link) {
+            s_last_link = (int)link;
+            s_idle_color = link_color(link);
+            s_flashing = false;
+            apply_led(s_idle_color);
         }
 
         if (xQueueReceive(s_rx_queue, &pkt, pdMS_TO_TICKS(20)) == pdTRUE) {
@@ -690,9 +716,10 @@ esp_err_t usb_proto_start(const usb_proto_config_t *config)
 
     s_cfg = *config;
 
-    s_idle_color  = s_cfg.led_connected;
-    s_flashing    = false;
-    s_was_mounted = false;
+    /* No host yet, and -1 forces the first pass to apply whatever is true. */
+    s_idle_color = s_cfg.led_disconnected;
+    s_flashing   = false;
+    s_last_link  = -1;
 
     s_rx_queue = xQueueCreate(RX_QUEUE_DEPTH, sizeof(usb_packet_t));
     if (s_rx_queue == NULL) {

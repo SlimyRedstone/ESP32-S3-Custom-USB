@@ -145,7 +145,9 @@ void proto_framer_push(proto_framer_t *f, const unsigned char *data, int len,
             }
         }
 
-        char message[PROTO_FRAME_MAX];
+        /* span can be the whole buffer, so the terminator needs a byte of
+           its own: message[PROTO_FRAME_MAX] would be one past the end. */
+        char message[PROTO_FRAME_MAX + 1];
         memcpy(message, f->buf + at, span);
         message[span] = '\0';
 

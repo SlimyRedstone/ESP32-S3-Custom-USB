@@ -12,7 +12,21 @@
 #include "usbdev.h"
 
 #define USB_VID     0x303A
-#define USB_PID     0x4001
+
+/*
+ * Both variants speak the same protocol. The bus is searched for both at once
+ * and the first entry here that is attached wins, so the controller takes
+ * precedence and the dongle is the fallback.
+ */
+static const struct {
+    uint16_t    pid;
+    const char *name;
+} USB_VARIANTS[] = {
+    { 0x4001, "IOMeeter Controller" },
+    { 0x4002, "IOMeeter Dongle" },
+};
+
+#define USB_VARIANT_COUNT ((int)(sizeof(USB_VARIANTS) / sizeof(USB_VARIANTS[0])))
 
 #define SEND_TIMEOUT_MS  500
 
@@ -249,9 +263,30 @@ bool app_connect(app_t *a)
         }
     }
 
-    if (usbdev_open(a->dev, USB_VID, USB_PID) != 0) {
-        app_log(a, APP_LOG_ERROR, "connect failed -- see the console for details");
+    uint16_t pids[USB_VARIANT_COUNT];
+    for (int i = 0; i < USB_VARIANT_COUNT; i++) {
+        pids[i] = USB_VARIANTS[i].pid;
+    }
+
+    if (usbdev_open_any(a->dev, USB_VID, pids, USB_VARIANT_COUNT) != 0) {
+        /* Retried on a timer, so this must not fill the log with one line per
+           attempt while nothing is plugged in. */
+        if (!a->connect_failure_logged) {
+            a->connect_failure_logged = true;
+            app_log(a, APP_LOG_ERROR, "no IOMeeter device found");
+        }
         return false;
+    }
+
+    a->connect_failure_logged = false;
+
+    snprintf(a->device_name, sizeof(a->device_name), "%s", "IOMeeter");
+    for (int i = 0; i < USB_VARIANT_COUNT; i++) {
+        if (USB_VARIANTS[i].pid == a->dev->pid) {
+            snprintf(a->device_name, sizeof(a->device_name), "%s",
+                     USB_VARIANTS[i].name);
+            break;
+        }
     }
 
     a->connected = true;
@@ -259,7 +294,9 @@ bool app_connect(app_t *a)
     /* Anything half-received from a previous session is meaningless now. */
     proto_framer_reset(&a->framer);
 
-    app_log(a, APP_LOG_EVENT, "connected: interface %d, OUT 0x%02X, IN 0x%02X",
+    app_log(a, APP_LOG_EVENT, "connected: %s (%04X:%04X)",
+            a->device_name, USB_VID, a->dev->pid);
+    app_log(a, APP_LOG_EVENT, "interface %d, OUT 0x%02X, IN 0x%02X",
             a->dev->interface, a->dev->ep_out, a->dev->ep_in);
     return true;
 }
@@ -271,6 +308,7 @@ void app_disconnect(app_t *a)
     }
     usbdev_close(a->dev);
     a->connected = false;
+    a->device_name[0] = '\0';
     app_log(a, APP_LOG_EVENT, "disconnected");
 }
 

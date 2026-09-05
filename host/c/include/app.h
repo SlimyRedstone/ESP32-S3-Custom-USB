@@ -52,6 +52,13 @@ typedef struct {
     usbdev_t *dev;
     bool      connected;
 
+    /* Friendly name of whichever variant is attached, or "" when none is. */
+    char      device_name[32];
+
+    /* The reconnect attempt runs every few seconds, so a failure is only
+       worth logging when it is the first since the last success. */
+    bool      connect_failure_logged;
+
     /* Reassembles the IN endpoint, which is a byte stream rather than a
        sequence of messages. */
     proto_framer_t framer;

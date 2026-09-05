@@ -22,15 +22,17 @@ void app_main(void) {
     ESP_ERROR_CHECK(neopixel_set_rgb(config_led_color(LED_STATE_BOOT)));
 
     usb_proto_config_t usb_cfg = USB_PROTO_DEFAULT_CONFIG();
-    usb_cfg.on_led_command = neopixel_set_rgb;
-    usb_cfg.on_led_query   = neopixel_get_rgb;
-    usb_cfg.on_config_get  = config_to_json;
-    usb_cfg.on_config_set  = config_from_json;
-    usb_cfg.on_slider_set  = config_set_slider;
-    usb_cfg.product        = "IOMeeter Controller";
-    usb_cfg.status_led     = true;
-    usb_cfg.led_connected  = config_led_color(LED_STATE_CONNECTED);
-    usb_cfg.led_receive    = config_led_color(LED_STATE_RECEIVE);
+    usb_cfg.on_led_command   = neopixel_set_rgb;
+    usb_cfg.on_led_query     = neopixel_get_rgb;
+    usb_cfg.on_config_get    = config_to_json;
+    usb_cfg.on_config_set    = config_from_json;
+    usb_cfg.on_slider_set    = config_set_slider;
+    usb_cfg.product          = "IOMeeter Controller";
+    usb_cfg.status_led       = true;
+    usb_cfg.led_disconnected = config_led_color(LED_STATE_DISCONNECTED);
+    usb_cfg.led_boot         = config_led_color(LED_STATE_BOOT);
+    usb_cfg.led_connected    = config_led_color(LED_STATE_CONNECTED);
+    usb_cfg.led_receive      = config_led_color(LED_STATE_RECEIVE);
     ESP_ERROR_CHECK(usb_proto_start(&usb_cfg));
 
     /* A press queues {"interrupt":{"gpio":..,"state":..,"message":..}}. */

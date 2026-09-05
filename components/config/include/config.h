@@ -31,9 +31,10 @@ extern "C" {
  * Deliberately not prefixed CONFIG_, which is reserved for Kconfig macros.
  */
 typedef enum {
-    LED_STATE_BOOT = 0,   /*!< Booting; USB not ready yet          */
-    LED_STATE_CONNECTED,  /*!< Host has configured the device      */
-    LED_STATE_RECEIVE,    /*!< A packet is arriving over USB       */
+    LED_STATE_BOOT = 0,      /*!< Attached, but not ready to talk yet  */
+    LED_STATE_CONNECTED,     /*!< Host has configured the device       */
+    LED_STATE_RECEIVE,       /*!< A packet is arriving over USB        */
+    LED_STATE_DISCONNECTED,  /*!< No USB host at all: bus not powered  */
     LED_STATE_MAX,
 } config_led_state_t;
 

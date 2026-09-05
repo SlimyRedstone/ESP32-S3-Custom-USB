@@ -86,6 +86,7 @@ show_device_access() {
 
     local line bus dev node
     line=$(lsusb -d 303a:4001 2>/dev/null | head -1)
+    [ -n "$line" ] || line=$(lsusb -d 303a:4002 2>/dev/null | head -1)
     if [ -z "$line" ]; then
         echo
         echo "Device not plugged in, so nothing to check yet."
@@ -132,7 +133,10 @@ write_udev_rule() {
         echo '#'
         echo '# uaccess gives an ACL to the user holding the active seat; plugdev is'
         echo '# the fallback for anything without a seat, such as an ssh session.'
+        echo '#'
+        echo '# 4001 is the controller, 4002 the dongle; either may be attached.'
         echo 'SUBSYSTEM=="usb", ATTR{idVendor}=="303a", ATTR{idProduct}=="4001", MODE="0660", GROUP="plugdev", TAG+="uaccess"'
+        echo 'SUBSYSTEM=="usb", ATTR{idVendor}=="303a", ATTR{idProduct}=="4002", MODE="0660", GROUP="plugdev", TAG+="uaccess"'
     } > "$UDEV_RULE"
 }
 

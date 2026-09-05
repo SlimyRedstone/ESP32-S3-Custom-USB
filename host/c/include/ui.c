@@ -1057,10 +1057,14 @@ int ui_run(app_t *app)
     }
 
     Clay_Arena arena = Clay_CreateArenaWithCapacityAndMemory(memorySize, memory);
-    int window_h = UI_WINDOW_HEIGHT_FOR(app->debug);
+
+    /* Opens at the smallest size the layout is designed to hold, and can be
+       dragged larger; the faders take whatever height there is. */
+    int window_w = UI_WINDOW_MIN_WIDTH;
+    int window_h = UI_WINDOW_MIN_HEIGHT;
 
     Clay_Initialize(arena,
-                    (Clay_Dimensions){ UI_WINDOW_WIDTH, (float)window_h },
+                    (Clay_Dimensions){ (float)window_w, (float)window_h },
                     (Clay_ErrorHandler){ HandleClayErrors, NULL });
 
 #ifndef _WIN32
@@ -1074,7 +1078,7 @@ int ui_run(app_t *app)
     setenv("RESOURCE_NAME", "IOMeeter", 1);
 #endif
 
-    Clay_Raylib_Initialize(UI_WINDOW_WIDTH, window_h,
+    Clay_Raylib_Initialize(window_w, window_h,
                            "IOMeeter",
                            FLAG_VSYNC_HINT | FLAG_WINDOW_RESIZABLE | FLAG_MSAA_4X_HINT);
 
@@ -1165,6 +1169,9 @@ int ui_run(app_t *app)
     unsigned long slider_extern_seen = 0;
     double slider_locked_until = 0.0;
 
+    /* Both variants are looked for on each sweep; see USB_VARIANTS. */
+    double last_connect_scan = GetTime();
+
     /* Per fader, so only the one the device is actually moving recolours. */
     unsigned long slider_seen_at[APP_FADER_COUNT] = { 0 };
     double slider_device_until[APP_FADER_COUNT] = { 0.0 };
@@ -1190,6 +1197,13 @@ int ui_run(app_t *app)
 
         if (tray_poll()) {      /* "Close IOMeeter" from the tray menu */
             break;
+        }
+
+        /* Plug the device in at any time and it is picked up on the next
+           sweep, without the Connect button being touched. */
+        if (!app->connected && GetTime() - last_connect_scan >= UI_CONNECT_SCAN_SECONDS) {
+            last_connect_scan = GetTime();
+            app_connect(app);
         }
 
         /* Somebody launched IOMeeter again: surface instead of ignoring it. */
@@ -1220,9 +1234,7 @@ int ui_run(app_t *app)
 
         if (app->debug != debug_seen) {
             debug_seen = app->debug;
-            window_h = UI_WINDOW_HEIGHT_FOR(app->debug);
             SetWindowMinSize(UI_WINDOW_MIN_WIDTH, UI_WINDOW_MIN_HEIGHT);
-            SetWindowSize(GetScreenWidth(), window_h);
         }
 
         if (app->notice_seq != s_toast_seen) {
@@ -1411,7 +1423,7 @@ int ui_run(app_t *app)
                     .cornerRadius = CLAY_CORNER_RADIUS(999),
                     .border = { .color = C_BORDER, .width = { 1, 1, 1, 1 } },
                 }) {
-                    CLAY_TEXT(dyn(app->connected ? "connected" : "disconnected"),
+                    CLAY_TEXT(dyn(app->connected ? app->device_name : "searching..."),
                               CLAY_TEXT_CONFIG({
                                   .fontId = FONT_MONO, .fontSize = 12,
                                   .textColor = app->connected ? C_OK : C_MUTED }));
@@ -1423,6 +1435,9 @@ int ui_run(app_t *app)
                     }
                 } else {
                     if (ui_button(CLAY_ID("Connect"), "Connect", true, true, false)) {
+                        /* An explicit press deserves an answer even if the
+                           timed sweep has already reported the same failure. */
+                        app->connect_failure_logged = false;
                         app_connect(app);
                     }
                 }

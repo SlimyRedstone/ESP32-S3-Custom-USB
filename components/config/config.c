@@ -20,15 +20,17 @@ static const char *TAG = "config";
 
 /* JSON key for each slot, indexed by config_led_state_t. */
 static const char *const s_led_keys[LED_STATE_MAX] = {
-    [LED_STATE_BOOT]      = "on_boot",
-    [LED_STATE_CONNECTED] = "on_connected",
-    [LED_STATE_RECEIVE]   = "on_receive",
+    [LED_STATE_BOOT]         = "on_boot",
+    [LED_STATE_CONNECTED]    = "on_connected",
+    [LED_STATE_RECEIVE]      = "on_receive",
+    [LED_STATE_DISCONNECTED] = "on_disconnected",
 };
 
 static const uint32_t s_led_defaults[LED_STATE_MAX] = {
-    [LED_STATE_BOOT]      = 0xFF0000,
-    [LED_STATE_CONNECTED] = 0x00FF00,
-    [LED_STATE_RECEIVE]   = 0xFF00FF,
+    [LED_STATE_BOOT]         = 0xFF0000,
+    [LED_STATE_CONNECTED]    = 0x00FF00,
+    [LED_STATE_RECEIVE]      = 0xFF00FF,
+    [LED_STATE_DISCONNECTED] = 0xFF8000,   /* orange */
 };
 
 static uint32_t s_led_colors[LED_STATE_MAX];
@@ -256,10 +258,11 @@ esp_err_t config_reload(void)
     parse_json(text);
     free(text);
 
-    ESP_LOGI(TAG, "boot=#%06X connected=#%06X receive=#%06X",
+    ESP_LOGI(TAG, "boot=#%06X connected=#%06X receive=#%06X disconnected=#%06X",
              (unsigned)s_led_colors[LED_STATE_BOOT],
              (unsigned)s_led_colors[LED_STATE_CONNECTED],
-             (unsigned)s_led_colors[LED_STATE_RECEIVE]);
+             (unsigned)s_led_colors[LED_STATE_RECEIVE],
+             (unsigned)s_led_colors[LED_STATE_DISCONNECTED]);
     return ESP_OK;
 }
 

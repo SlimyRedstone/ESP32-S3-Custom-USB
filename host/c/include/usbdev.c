@@ -176,6 +176,51 @@ static int open_matching(usbdev_t *d, uint16_t vid, uint16_t pid)
     return -1;
 }
 
+/* Which of @p pids is on the bus, or 0. Uses its own context so it can run
+   before, and independently of, the one the open will keep. */
+static uint16_t present_pid(uint16_t vid, const uint16_t *pids, int count)
+{
+    libusb_context *ctx = NULL;
+
+    if (libusb_init(&ctx) != 0) {
+        return 0;
+    }
+
+    libusb_device **list = NULL;
+    ssize_t n = libusb_get_device_list(ctx, &list);
+    uint16_t chosen = 0;
+
+    for (int p = 0; p < count && chosen == 0 && n > 0; p++) {
+        for (ssize_t i = 0; i < n; i++) {
+            struct libusb_device_descriptor desc;
+
+            if (libusb_get_device_descriptor(list[i], &desc) != 0) {
+                continue;
+            }
+            if (desc.idVendor == vid && desc.idProduct == pids[p]) {
+                chosen = pids[p];
+                break;
+            }
+        }
+    }
+
+    if (n >= 0) {
+        libusb_free_device_list(list, 1);
+    }
+    libusb_exit(ctx);
+    return chosen;
+}
+
+int usbdev_open_any(usbdev_t *d, uint16_t vid, const uint16_t *pids, int count)
+{
+    uint16_t chosen = present_pid(vid, pids, count);
+
+    if (chosen == 0) {
+        return -1;      /* nothing attached; the caller decides how loudly */
+    }
+    return usbdev_open(d, vid, chosen);
+}
+
 int usbdev_open(usbdev_t *d, uint16_t vid, uint16_t pid)
 {
     memset(d, 0, sizeof(*d));
@@ -213,6 +258,7 @@ int usbdev_open(usbdev_t *d, uint16_t vid, uint16_t pid)
         return -1;
     }
     d->claimed = true;
+    d->pid = pid;
 
     printf("interface %d: OUT=0x%02X IN=0x%02X mps=%d\n",
            d->interface, d->ep_out, d->ep_in, d->max_packet);

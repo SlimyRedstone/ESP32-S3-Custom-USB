@@ -12,22 +12,25 @@
 #include "app.h"
 
 /*
- * Starting size, and also the floor: the cards stop being readable below it.
- * The traffic console only exists when "debug" is set in config.json, so the
- * window is shorter without it.
+ * The heights the layout was designed around, quoted for a full-size fader
+ * track. The window no longer opens at these -- it opens at the minimum below
+ * -- but the difference between them and FADER_TRACK_HEIGHT is what everything
+ * other than the strip needs, which is how ui_fader_height() shares out the
+ * real window. The traffic console only exists when "debug" is set, hence two.
  */
-#define UI_WINDOW_WIDTH         1130
 #define UI_WINDOW_HEIGHT_DEBUG  777
 #define UI_WINDOW_HEIGHT_PLAIN  630
 
 #define UI_WINDOW_HEIGHT_FOR(debug)     ((debug) ? UI_WINDOW_HEIGHT_DEBUG : UI_WINDOW_HEIGHT_PLAIN)
 
-/* Floor for the frame rate when the monitor refreshes more slowly than this. */
 /* The interface runs at the monitor's refresh rate. Used only when the driver
    does not report one. */
 #define UI_FALLBACK_FPS   60
 
-/* Minimum the layout stays usable at. */
+/* How often the bus is swept for a device while none is connected. */
+#define UI_CONNECT_SCAN_SECONDS 5.0
+
+/* Minimum the layout stays usable at, and the size it opens at. */
 #define UI_WINDOW_MIN_WIDTH   850
 #define UI_WINDOW_MIN_HEIGHT  550
 

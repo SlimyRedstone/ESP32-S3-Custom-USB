@@ -24,6 +24,7 @@ typedef struct usbdev {
     unsigned char ep_out;       /*!< bulk OUT endpoint address */
     unsigned char ep_in;        /*!< bulk IN endpoint address  */
     int           max_packet;   /*!< wMaxPacketSize, normally 64 */
+    uint16_t      pid;          /*!< product id actually opened  */
     bool          claimed;
 } usbdev_t;
 
@@ -35,6 +36,20 @@ typedef struct usbdev {
  * failure nothing needs releasing.
  */
 int usbdev_open(usbdev_t *d, uint16_t vid, uint16_t pid);
+
+/**
+ * Open whichever of several product ids is attached.
+ *
+ * The bus is enumerated once and the earliest entry of @p pids that is present
+ * wins, so the list is a preference order rather than a sequence of attempts:
+ * a missing first choice costs nothing and reports nothing.
+ *
+ * @param pids  Product ids, most preferred first.
+ * @param count How many.
+ * @return 0 on success, leaving d->pid set to the one opened. -1 if none of
+ *         them is attached, or the one that is could not be opened.
+ */
+int usbdev_open_any(usbdev_t *d, uint16_t vid, const uint16_t *pids, int count);
 
 void usbdev_close(usbdev_t *d);
 

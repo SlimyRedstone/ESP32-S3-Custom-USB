@@ -94,19 +94,25 @@ typedef struct {
     bool cdc_echo;    /*!< Echo back whatever is typed at the CDC port */
 
     /*
-     * Status LED. When enabled, on_led_command is also driven on state changes:
-     * led_connected once the host configures the device, then a brief flash of
-     * led_receive per incoming packet before returning to the idle colour.
+     * Status LED. When enabled, on_led_command is also driven on state changes,
+     * with three resting colours:
+     *
+     *   led_disconnected  no host at all; the bus is not even powered
+     *   led_boot          attached, but not yet configured enough to talk
+     *   led_connected     tud_connected() && tud_ready()
+     *
+     * A brief flash of led_receive marks each incoming packet before returning
+     * to whichever of the three applies.
      *
      * An explicit LED.RRGGBB command replaces the idle colour, so a colour set
-     * by the host survives subsequent receive flashes instead of being reverted.
-     *
-     * The boot colour is not listed here: it applies before the USB stack is
-     * running, so the caller sets it directly.
+     * by the host survives receive flashes. The next change of USB state takes
+     * the LED back, since that is information the host cannot override.
      */
     bool     status_led;
     uint32_t led_connected;  /*!< packed 0xRRGGBB */
     uint32_t led_receive;    /*!< packed 0xRRGGBB */
+    uint32_t led_boot;       /*!< packed 0xRRGGBB, attached but not ready */
+    uint32_t led_disconnected; /*!< packed 0xRRGGBB, no host attached     */
 
     /* USB identity. NULL strings keep the built-in defaults. */
     const char *manufacturer;
