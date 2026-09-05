@@ -537,14 +537,6 @@ static void wait_for(pa_operation *op)
     pa_operation_unref(op);
 }
 
-static void done_cb(pa_context *c, int success, void *userdata)
-{
-    (void)c;
-    (void)success;
-    (void)userdata;
-    pa_threaded_mainloop_signal(s_loop, 0);
-}
-
 /* Which executable a stream belongs to. */
 static const char *binary_of(const pa_sink_input_info *info)
 {

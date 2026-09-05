@@ -15,6 +15,10 @@
 #   sudo apt install build-essential cmake pkg-config libusb-1.0-0-dev \
 #                    libpulse-dev libayatana-appindicator3-dev
 #
+# raylib is also needed. libraylib-dev exists from Debian 12 and Ubuntu
+# 23.04 onward; on anything older, build it from source. ./install.sh sorts
+# all of this out and reports what it could not find.
+#
 # Talking to the device needs permission for the USB node. Install the udev
 # rule once, then unplug and replug the device:
 #
@@ -69,7 +73,21 @@ require_pkg() {
     exit 1
 }
 
+# A build directory left behind by a run under sudo belongs to root, so cmake
+# cannot write its cache as you. Nothing here runs as root, so it can only be
+# reported.
+check_build_owner() {
+    [ -d "$BUILD_DIR" ] || return 0
+    [ -w "$BUILD_DIR" ] && return 0
+
+    echo "$BUILD_DIR is not writable: it was created by a run under sudo." >&2
+    echo "Remove it with:" >&2
+    echo "    sudo rm -rf \"$PWD/$BUILD_DIR\"" >&2
+    exit 1
+}
+
 setup() {
+    check_build_owner
     require cmake cmake
     require pkg-config pkg-config
 
@@ -128,6 +146,7 @@ set_file_icon() {
 }
 
 compile() {
+    check_build_owner
     warn_stale_pulse
     echo "Compiling main..."
     cmake --build "$BUILD_DIR" || exit 1

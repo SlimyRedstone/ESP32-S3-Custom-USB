@@ -256,19 +256,7 @@ bool tray_poll(void)
 
 #include <string.h>
 
-/*
- * raylib exposes neither the GLFW window nor a way to hide it, and on Linux
- * GetWindowHandle() returns NULL. GLFW is linked in regardless, so these are
- * declared here rather than pulling in glfw3.h, whose types would collide with
- * nothing but whose header is not guaranteed to be installed.
- *
- * glfwGetCurrentContext() is the supported way to recover the window: raylib
- * makes its context current during initialisation and never changes it.
- */
-extern void *glfwGetCurrentContext(void);
-extern void  glfwHideWindow(void *window);
-extern void  glfwShowWindow(void *window);
-extern void  glfwFocusWindow(void *window);
+#include "window.h"
 
 static AppIndicator *s_indicator;
 static bool s_ready;
@@ -395,10 +383,7 @@ void tray_minimize(void)
         return;
     }
 
-    void *window = glfwGetCurrentContext();
-    if (window) {
-        glfwHideWindow(window);
-    }
+    window_hide();
     s_hidden = true;
 }
 
@@ -408,11 +393,7 @@ void tray_restore(void)
         return;
     }
 
-    void *window = glfwGetCurrentContext();
-    if (window) {
-        glfwShowWindow(window);
-        glfwFocusWindow(window);
-    }
+    window_show();
     s_hidden = false;
 }
 

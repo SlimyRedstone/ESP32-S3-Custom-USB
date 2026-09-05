@@ -186,7 +186,7 @@ bool filedialog_open(const char *title, char *out, size_t cap)
     }
     out[0] = '\0';
 
-    char command[640];
+    char command[1024];
     char start[512];
 
     if (!program_directory(start, sizeof(start))) {
@@ -220,7 +220,7 @@ bool filedialog_open_program(const char *title, char *out, size_t cap)
     }
     out[0] = '\0';
 
-    char command[640];
+    char command[1024];
 
     /* Executables carry no extension here, so the chooser opens where most of
        them live instead of filtering by name. */
@@ -254,7 +254,7 @@ bool filedialog_save(const char *title, const char *suggested,
     out[0] = '\0';
 
     const char *name = suggested ? suggested : "config.json";
-    char command[640];
+    char command[1024];
     char start[512];
 
     if (!program_directory(start, sizeof(start))) {

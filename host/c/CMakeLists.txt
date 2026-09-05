@@ -24,6 +24,7 @@ add_executable(IOMeeter
     include/cli.c
     include/console.c
     include/instance.c
+    include/window.c
     libs/cJSON.c
     include/mixer.c
     include/audio_endpoint.c

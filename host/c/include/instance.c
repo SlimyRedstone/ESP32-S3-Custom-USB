@@ -2,12 +2,7 @@
 
 #include <stdio.h>
 
-/* raylib exposes no way to raise or un-hide its window, and on Linux
-   GetWindowHandle() returns NULL, so GLFW is reached directly. */
-extern void *glfwGetCurrentContext(void);
-extern void  glfwShowWindow(void *window);
-extern void  glfwFocusWindow(void *window);
-extern void  glfwRequestWindowAttention(void *window);
+#include "window.h"
 
 #ifdef _WIN32
 
@@ -208,16 +203,9 @@ void instance_raise(void *window_handle)
 {
     (void)window_handle;    /* NULL on Linux */
 
-    void *window = glfwGetCurrentContext();
-    if (window == NULL) {
-        return;
-    }
-
-    glfwShowWindow(window);
-    glfwFocusWindow(window);
-
-    /* Window managers may refuse the focus grab; this at least marks it. */
-    glfwRequestWindowAttention(window);
+    /* A window manager may still refuse to raise a window that did not come
+       from the user's own interaction; there is nothing more to be done. */
+    window_show();
 }
 
 void instance_release(void)

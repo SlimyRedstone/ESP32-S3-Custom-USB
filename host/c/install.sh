@@ -34,8 +34,13 @@ UDEV_RULE=/etc/udev/rules.d/60-iomeeter.rules
 UDEV_RULES_STALE="/etc/udev/rules.d/99-iomeeter.rules
 /etc/udev/rules.d/99-esp32s3-vendor.rules"
 
-APT_PACKAGES="build-essential cmake pkg-config libusb-1.0-0-dev libpulse-dev
-libayatana-appindicator3-dev libraylib-dev"
+# Without these there is no build at all.
+APT_REQUIRED="build-essential cmake pkg-config libusb-1.0-0-dev libpulse-dev"
+
+# These the build can do without: no tray icon, or raylib from somewhere other
+# than apt. libraylib-dev only exists from Debian 12 and Ubuntu 23.04 onward,
+# so on Mint 21 and Ubuntu 22.04 it is simply absent.
+APT_OPTIONAL="libayatana-appindicator3-dev libraylib-dev"
 
 MODE=install
 
@@ -191,20 +196,88 @@ uninstall)
 esac
 
 echo "=== 1/3  Prerequisites ==="
-missing=""
-for pkg in $APT_PACKAGES; do
-    dpkg -s "$pkg" >/dev/null 2>&1 || missing="$missing $pkg"
+
+# apt aborts the whole transaction over one unknown name, so anything the
+# distribution does not carry is dropped before the call rather than taking
+# the packages that do exist down with it.
+apt_knows() {
+    apt-cache show "$1" >/dev/null 2>&1
+}
+
+installed() {
+    dpkg -s "$1" >/dev/null 2>&1
+}
+
+wanted=""
+absent=""
+
+for pkg in $APT_REQUIRED; do
+    installed "$pkg" && continue
+    if apt_knows "$pkg"; then
+        wanted="$wanted $pkg"
+    else
+        echo "Required package not available on this distribution: $pkg" >&2
+        exit 1
+    fi
 done
 
-if [ -n "$missing" ]; then
-    echo "Installing:$missing"
-    sudo apt install -y $missing || exit 1
+# raylib often comes from a source build or a PPA instead, in which case there
+# is nothing to install and nothing to warn about.
+raylib_present() {
+    pkg-config --exists raylib 2>/dev/null && return 0
+    [ -f /usr/local/lib/libraylib.a ] && return 0
+    [ -f /usr/local/lib/libraylib.so ] && return 0
+    ls /usr/local/lib/cmake/raylib >/dev/null 2>&1 && return 0
+    ls /usr/lib/*/cmake/raylib >/dev/null 2>&1 && return 0
+    return 1
+}
+
+for pkg in $APT_OPTIONAL; do
+    installed "$pkg" && continue
+    if [ "$pkg" = libraylib-dev ] && raylib_present; then
+        continue
+    fi
+    if apt_knows "$pkg"; then
+        wanted="$wanted $pkg"
+    else
+        absent="$absent $pkg"
+    fi
+done
+
+if [ -n "$wanted" ]; then
+    echo "Installing:$wanted"
+    sudo apt install -y $wanted || exit 1
 else
     echo "Already present."
 fi
 
+for pkg in $absent; do
+    echo
+    echo "WARNING: $pkg is not in this distribution's repositories."
+    case "$pkg" in
+        libraylib-dev)
+            echo "raylib is needed to build. Get it with one of:"
+            echo "    sudo apt install libraylib-dev      (Debian 12+, Ubuntu 23.04+)"
+            echo "    or build it from https://github.com/raysan5/raylib"
+            ;;
+        libayatana-appindicator3-dev)
+            echo "There will be no tray icon; everything else still works."
+            echo "Try: sudo apt install libappindicator3-dev"
+            ;;
+    esac
+done
+
 echo
 echo "=== 2/3  Build ==="
+
+# A build directory left behind by a sudo run belongs to root, and cmake then
+# cannot write its cache as you. It is about to be wiped anyway.
+if [ -d build ] && [ ! -w build ]; then
+    echo "build/ is not writable -- it was created by a run under sudo."
+    echo "Removing it so the build can proceed:"
+    sudo rm -rf build || exit 1
+fi
+
 ./build.sh clean || exit 1
 ./build.sh build || exit 1
 

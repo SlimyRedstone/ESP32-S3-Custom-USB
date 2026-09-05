@@ -36,6 +36,8 @@ int main(int argc, char **argv)
     /* if (argc > 1) {
         return cli_run(argc, argv);
     } */
+    (void)argc;
+    (void)argv;
 
     /* A second launch hands its request to the copy already running, which
        raises its window; there is nothing left for this one to do. */
