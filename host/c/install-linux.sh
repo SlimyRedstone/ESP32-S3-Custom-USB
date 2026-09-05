@@ -29,12 +29,13 @@ MODE=install
 SYSTEM=0
 
 usage() {
-    echo "Usage: ./install-linux.sh [--system|--uninstall|--udev]"
+    echo "Usage: ./install-linux.sh [--system|--uninstall|--udev|--check]"
     echo
     echo "  (none)       install for this user, under ~/.local"
     echo "  --system     install for everyone, under /usr/local (needs root)"
     echo "  --uninstall  remove whichever installation is present"
     echo "  --udev       install the USB permission rule (needs root)"
+    echo "  --check      report whether the USB rule is working"
 }
 
 for arg in "$@"; do
@@ -42,6 +43,7 @@ for arg in "$@"; do
         --system)    PREFIX=/usr/local; SYSTEM=1 ;;
         --uninstall) MODE=uninstall ;;
         --udev)      MODE=udev ;;
+        --check)     MODE=check ;;
         -h|--help)   usage; exit 0 ;;
         *)
             echo "Unknown option: $arg" >&2
@@ -78,7 +80,10 @@ DESKTOP_FILE="$DESKTOP_DIR/IOMeeter.desktop"
 # uaccess tag into an ACL. A rule numbered above that sets the tag too late
 # for anything to read it.
 UDEV_RULE=/etc/udev/rules.d/60-iomeeter.rules
-UDEV_RULE_OLD=/etc/udev/rules.d/99-iomeeter.rules
+# Rules earlier versions of this project told people to write by hand. Both
+# sort after 73-seat-late.rules, so their uaccess tag never did anything.
+UDEV_RULES_STALE="/etc/udev/rules.d/99-iomeeter.rules
+/etc/udev/rules.d/99-esp32s3-vendor.rules"
 
 # The menu and the icon theme are both cached; without this the entry can take
 # until the next login to appear.
@@ -122,6 +127,24 @@ show_device_access() {
     fi
 }
 
+if [ "$MODE" = check ]; then
+    if [ -f "$UDEV_RULE" ]; then
+        echo "Rule installed: $UDEV_RULE"
+    else
+        echo "Rule MISSING: $UDEV_RULE"
+        echo "Install it with: sudo $0 --udev"
+    fi
+    echo "$UDEV_RULES_STALE" | while read -r stale; do
+        if [ -n "$stale" ] && [ -f "$stale" ]; then
+            echo "Stale rule present: $stale (sorts too late to work)"
+        fi
+    done
+
+    echo "Your groups: $(id -nG)"
+    show_device_access
+    exit 0
+fi
+
 if [ "$MODE" = udev ]; then
     if [ "$(id -u)" -ne 0 ]; then
         echo "Installing the udev rule needs root:" >&2
@@ -142,7 +165,9 @@ if [ "$MODE" = udev ]; then
 SUBSYSTEM=="usb", ATTR{idVendor}=="303a", ATTR{idProduct}=="4001", MODE="0660", GROUP="plugdev", TAG+="uaccess"
 RULE
     chmod 644 "$UDEV_RULE"
-    rm -f "$UDEV_RULE_OLD"      # an earlier version installed it too late to work
+    echo "$UDEV_RULES_STALE" | while read -r stale; do
+        [ -n "$stale" ] && rm -f "$stale"
+    done
     udevadm control --reload-rules && udevadm trigger
 
     echo "Installed $UDEV_RULE"
