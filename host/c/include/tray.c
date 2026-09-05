@@ -1,5 +1,7 @@
 #include "tray.h"
 
+#include <stdio.h>
+
 #ifdef _WIN32
 
 #include <windows.h>
@@ -240,12 +242,224 @@ bool tray_poll(void)
     return quit;
 }
 
-#else /* !_WIN32 */
+#elif defined(TRAY_HAVE_APPINDICATOR)
 
 /*
- * No tray here. A Linux implementation would speak StatusNotifierItem over
- * D-Bus, or fall back to libappindicator, neither of which belongs in a file
- * this size. The window icon is set by the UI through raylib instead.
+ * Cinnamon, KDE and the GNOME extensions all show tray icons through
+ * StatusNotifierItem over D-Bus; Mint runs xapp-sn-watcher for exactly that.
+ * Ayatana's AppIndicator speaks it, so this uses that rather than the retired
+ * XEmbed system tray, which current Cinnamon no longer hosts.
+ */
+
+#include <libayatana-appindicator/app-indicator.h>
+#include <gtk/gtk.h>
+
+#include <string.h>
+
+/*
+ * raylib exposes neither the GLFW window nor a way to hide it, and on Linux
+ * GetWindowHandle() returns NULL. GLFW is linked in regardless, so these are
+ * declared here rather than pulling in glfw3.h, whose types would collide with
+ * nothing but whose header is not guaranteed to be installed.
+ *
+ * glfwGetCurrentContext() is the supported way to recover the window: raylib
+ * makes its context current during initialisation and never changes it.
+ */
+extern void *glfwGetCurrentContext(void);
+extern void  glfwHideWindow(void *window);
+extern void  glfwShowWindow(void *window);
+extern void  glfwFocusWindow(void *window);
+
+static AppIndicator *s_indicator;
+static bool s_ready;
+static bool s_hidden;
+static bool s_quit_requested;
+static bool s_show_requested;
+
+static void on_show_clicked(GtkMenuItem *item, gpointer user_data)
+{
+    (void)item;
+    (void)user_data;
+    s_show_requested = true;
+}
+
+static void on_quit_clicked(GtkMenuItem *item, gpointer user_data)
+{
+    (void)item;
+    (void)user_data;
+    s_quit_requested = true;
+}
+
+/*
+ * AppIndicator looks its icon up by name in an icon theme rather than opening a
+ * file, so the directory is registered as a search path and the name is the
+ * file's stem. "icon.png" in resources/ therefore becomes the name "icon".
+ */
+static void split_icon_path(const char *path, char *dir, size_t dir_cap,
+                            char *name, size_t name_cap)
+{
+    const char *slash = strrchr(path, '/');
+    const char *base = slash ? slash + 1 : path;
+
+    if (slash) {
+        size_t n = (size_t)(slash - path);
+        if (n >= dir_cap) {
+            n = dir_cap - 1;
+        }
+        memcpy(dir, path, n);
+        dir[n] = 0;
+    } else {
+        snprintf(dir, dir_cap, ".");
+    }
+
+    snprintf(name, name_cap, "%s", base);
+
+    char *dot = strrchr(name, '.');
+    if (dot) {
+        *dot = 0;
+    }
+}
+
+bool tray_init(void *window_handle, const char *icon_path, const char *tooltip)
+{
+    (void)window_handle;        /* NULL on Linux; the GLFW window is used */
+
+    if (s_ready) {
+        return true;
+    }
+
+    /* Fails when there is no display, in which case there is no tray either. */
+    if (!gtk_init_check(NULL, NULL)) {
+        fprintf(stderr, "tray: no display, so no tray icon\n");
+        return false;
+    }
+
+    char dir[512];
+    char name[128];
+
+    if (icon_path && icon_path[0]) {
+        split_icon_path(icon_path, dir, sizeof(dir), name, sizeof(name));
+        s_indicator = app_indicator_new_with_path(
+            "iomeeter", name, APP_INDICATOR_CATEGORY_APPLICATION_STATUS, dir);
+    } else {
+        s_indicator = app_indicator_new(
+            "iomeeter", "audio-volume-high",
+            APP_INDICATOR_CATEGORY_APPLICATION_STATUS);
+    }
+
+    if (s_indicator == NULL) {
+        fprintf(stderr, "tray: could not create the status icon\n");
+        return false;
+    }
+
+    GtkWidget *menu = gtk_menu_new();
+    GtkWidget *show_item = gtk_menu_item_new_with_label("Show IOMeeter");
+    GtkWidget *quit_item = gtk_menu_item_new_with_label("Close IOMeeter");
+
+    g_signal_connect(show_item, "activate", G_CALLBACK(on_show_clicked), NULL);
+    g_signal_connect(quit_item, "activate", G_CALLBACK(on_quit_clicked), NULL);
+
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), show_item);
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), quit_item);
+    gtk_widget_show_all(menu);
+
+    app_indicator_set_menu(s_indicator, GTK_MENU(menu));
+    app_indicator_set_status(s_indicator, APP_INDICATOR_STATUS_ACTIVE);
+
+    if (tooltip && tooltip[0]) {
+        app_indicator_set_title(s_indicator, tooltip);
+    }
+
+    s_ready = true;
+    return true;
+}
+
+void tray_shutdown(void)
+{
+    if (s_indicator) {
+        app_indicator_set_status(s_indicator, APP_INDICATOR_STATUS_PASSIVE);
+        g_object_unref(s_indicator);
+        s_indicator = NULL;
+    }
+    s_ready = false;
+}
+
+bool tray_available(void)
+{
+    return s_ready;
+}
+
+void tray_minimize(void)
+{
+    if (!s_ready || s_hidden) {
+        return;
+    }
+
+    void *window = glfwGetCurrentContext();
+    if (window) {
+        glfwHideWindow(window);
+    }
+    s_hidden = true;
+}
+
+void tray_restore(void)
+{
+    if (!s_ready || !s_hidden) {
+        return;
+    }
+
+    void *window = glfwGetCurrentContext();
+    if (window) {
+        glfwShowWindow(window);
+        glfwFocusWindow(window);
+    }
+    s_hidden = false;
+}
+
+bool tray_is_minimized(void)
+{
+    return s_hidden;
+}
+
+/*
+ * Notifications would mean a libnotify dependency for one line of text. The
+ * interface already draws its own toast, so this stays a no-op.
+ */
+void tray_notify(const char *title, const char *text)
+{
+    (void)title;
+    (void)text;
+}
+
+bool tray_poll(void)
+{
+    if (!s_ready) {
+        return false;
+    }
+
+    /* Non-blocking: GTK shares the frame with raylib rather than owning a loop. */
+    while (gtk_events_pending()) {
+        gtk_main_iteration_do(FALSE);
+    }
+
+    if (s_show_requested) {
+        s_show_requested = false;
+        tray_restore();
+    }
+
+    if (s_quit_requested) {
+        s_quit_requested = false;
+        return true;
+    }
+    return false;
+}
+
+#else /* no tray backend */
+
+/*
+ * Built without a tray backend: no Windows shell and no AppIndicator. The
+ * interface still runs, the close button quits normally, and the window icon
+ * is whatever the UI set through raylib.
  */
 
 bool tray_init(void *window_handle, const char *icon_path, const char *tooltip)

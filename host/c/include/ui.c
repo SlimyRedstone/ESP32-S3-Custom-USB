@@ -821,7 +821,12 @@ int ui_run(app_t *app)
     /* On Windows this also owns the tray, and replaces the icon above with the
        multi-resolution .ico through the shell. */
     char tray_icon[512];
-    if (!respath_find("icon.ico", tray_icon, sizeof(tray_icon))) {
+#ifdef _WIN32
+    const char *tray_icon_file = "icon.ico";
+#else
+    const char *tray_icon_file = "icon.png";    /* AppIndicator cannot read .ico */
+#endif
+    if (!respath_find(tray_icon_file, tray_icon, sizeof(tray_icon))) {
         tray_icon[0] = 0;
     }
     tray_init(GetWindowHandle(), tray_icon, "IOMeeter");
@@ -862,10 +867,24 @@ int ui_run(app_t *app)
        traffic console and so changes the height the layout needs. */
     bool debug_seen = app->debug;
 
-    bool quit = false;
+    for (;;) {
+        /*
+         * On Windows the close button never gets this far: tray.c swallows
+         * WM_CLOSE in the window procedure. Elsewhere it arrives here, and
+         * WindowShouldClose() reports it exactly once because raylib clears
+         * GLFW's flag as it reads it, so ignoring it simply keeps the loop
+         * running. With a tray present that means hiding instead of quitting.
+         */
+        if (WindowShouldClose()) {
+            if (!tray_available()) {
+                break;
+            }
+            tray_minimize();
+        }
 
-    while (!WindowShouldClose() && !quit) {
-        quit = tray_poll();
+        if (tray_poll()) {      /* "Close IOMeeter" from the tray menu */
+            break;
+        }
 
         if (tray_available() && !tray_is_minimized() && IsWindowMinimized()) {
             tray_minimize();

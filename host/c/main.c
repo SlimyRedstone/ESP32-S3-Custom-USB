@@ -24,6 +24,7 @@
 
 #include "app.h"
 #include "cli.h"
+#include "console.h"
 #include "ui.h"
 
 int main(int argc, char **argv)
@@ -37,9 +38,14 @@ int main(int argc, char **argv)
 
     static app_t app;
     app_init(&app);
+
+    /* app_init has read config.json by now, so "debug" is known. */
+    console_init(app.debug);
+
     app_connect(&app);
 
     int status = ui_run(&app);
     app_shutdown(&app);
+    console_shutdown();
     return status;
 }

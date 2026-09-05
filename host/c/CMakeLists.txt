@@ -1,6 +1,11 @@
 cmake_minimum_required(VERSION 3.16)
 project(IOMeeter LANGUAGES C)
 
+# Only Windows executables carry an icon inside the file itself.
+if(WIN32)
+    enable_language(RC)
+endif()
+
 set(CMAKE_C_STANDARD 99)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 
@@ -17,6 +22,7 @@ add_executable(IOMeeter
     include/filedialog.c
     include/respath.c
     include/cli.c
+    include/console.c
     include/mixer.c
     include/audio_endpoint.c
 )
@@ -25,13 +31,23 @@ add_executable(IOMeeter
 # implementation, and ui.c is that unit.
 set_source_files_properties(include/ui.c PROPERTIES
     COMPILE_DEFINITIONS "CLAY_IMPLEMENTATION")
-set_target_properties(IOMeeter PROPERTIES OUTPUT_NAME "main")
+set_target_properties(IOMeeter PROPERTIES OUTPUT_NAME "IOMeeter")
 
 # Only Windows gets the extension. CMake would append it there anyway, but
 # stating it keeps the intent obvious -- setting SUFFIX unconditionally is what
 # produced a "main.exe" on Linux.
 if(WIN32)
     set_target_properties(IOMeeter PROPERTIES SUFFIX ".exe")
+
+    # Link as a GUI application so no console window appears behind the
+    # interface. console.c opens one on demand when config.json sets "debug".
+    # MinGW keeps main() as the entry point under -mwindows.
+    set_target_properties(IOMeeter PROPERTIES WIN32_EXECUTABLE TRUE)
+
+    # Gives the .exe its own icon in Explorer, independent of the window and
+    # tray icons, which are loaded at run time. windres resolves icon.ico
+    # relative to the .rc file, so no include path is needed.
+    target_sources(IOMeeter PRIVATE resources/icon.rc)
 endif()
 
 # Our own headers, plus the vendored Clay single-headers in libs/. libusb's
@@ -93,6 +109,23 @@ else()
             "libpulse not found: per-application volume will be disabled.
 "
             "  Debian/Ubuntu: sudo apt install libpulse-dev")
+    endif()
+
+    # The tray icon goes through StatusNotifierItem, which is what Cinnamon,
+    # KDE and the GNOME extensions listen on. Optional: without it the window
+    # simply has no tray icon and its close button quits.
+    if(PkgConfig_FOUND)
+        pkg_check_modules(APPINDICATOR QUIET IMPORTED_TARGET ayatana-appindicator3-0.1)
+    endif()
+    if(TARGET PkgConfig::APPINDICATOR)
+        target_link_libraries(IOMeeter PRIVATE PkgConfig::APPINDICATOR)
+        target_compile_definitions(IOMeeter PRIVATE TRAY_HAVE_APPINDICATOR)
+        message(STATUS "tray: Ayatana AppIndicator")
+    else()
+        message(WARNING
+            "libayatana-appindicator not found: there will be no tray icon.
+"
+            "  Debian/Ubuntu/Mint: sudo apt install libayatana-appindicator3-dev")
     endif()
 endif()
 

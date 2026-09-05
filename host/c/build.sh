@@ -11,7 +11,8 @@
 # Unlike the Windows build there is no vcpkg or MinGW here: libusb comes from
 # the system package manager and CMake finds it through pkg-config.
 #
-#   sudo apt install build-essential cmake pkg-config libusb-1.0-0-dev libpulse-dev
+#   sudo apt install build-essential cmake pkg-config libusb-1.0-0-dev \
+#                    libpulse-dev libayatana-appindicator3-dev
 #
 # Talking to the device needs permission for the USB node. Install the udev
 # rule once, then unplug and replug the device:
@@ -34,8 +35,8 @@ BUILD_DIR=build
 # CMake appends ".exe" on Windows only, so this is "main" here. The fallback
 # covers a build directory left over from before that was made conditional.
 exe_path() {
-    if   [ -f "$BUILD_DIR/main" ];     then printf '%s\n' "$BUILD_DIR/main"
-    elif [ -f "$BUILD_DIR/main.exe" ]; then printf '%s\n' "$BUILD_DIR/main.exe"
+    if   [ -f "$BUILD_DIR/IOMeeter" ];     then printf '%s\n' "$BUILD_DIR/IOMeeter"
+    elif [ -f "$BUILD_DIR/IOMeeter.exe" ]; then printf '%s\n' "$BUILD_DIR/IOMeeter.exe"
     else return 1
     fi
 }
@@ -75,27 +76,59 @@ setup() {
     # faders move, and nothing changes volume. Mint does not ship it.
     require_pkg libpulse libpulse-dev
 
+    # The tray icon is optional, so this only warns.
+    if ! pkg-config --exists ayatana-appindicator3-0.1; then
+        echo "libayatana-appindicator not found: there will be no tray icon." >&2
+        echo "Install it with:" >&2
+        echo "    sudo apt install libayatana-appindicator3-dev" >&2
+        echo >&2
+    fi
+
     rm -rf "$BUILD_DIR"
     cmake -S . -B "$BUILD_DIR" || exit 1
 }
 
-# CMake only looks for libpulse when it configures. A build directory created
-# before libpulse-dev was installed therefore keeps the stub mixer, and the
-# faders go on doing nothing until it is reconfigured.
+# CMake only looks for its optional dependencies when it configures. A build
+# directory created before they were installed therefore keeps the stub mixer
+# and no tray icon, however many times it is rebuilt.
 warn_stale_pulse() {
     [ -f "$BUILD_DIR/CMakeCache.txt" ] || return 0
-    grep -q '^PULSE_FOUND:INTERNAL=1$' "$BUILD_DIR/CMakeCache.txt" && return 0
 
-    echo "WARNING: this build directory was configured without PulseAudio," >&2
-    echo "so per-application volume is disabled. Reconfigure with:" >&2
-    echo "    ./build.sh clean && ./build.sh" >&2
-    echo >&2
+    if ! grep -q '^PULSE_FOUND:INTERNAL=1$' "$BUILD_DIR/CMakeCache.txt"; then
+        echo "WARNING: this build directory was configured without PulseAudio," >&2
+        echo "so per-application volume is disabled. Reconfigure with:" >&2
+        echo "    ./build.sh clean && ./build.sh" >&2
+        echo >&2
+    fi
+
+    if ! grep -q '^APPINDICATOR_FOUND:INTERNAL=1$' "$BUILD_DIR/CMakeCache.txt"; then
+        echo "WARNING: this build directory was configured without AppIndicator," >&2
+        echo "so there will be no tray icon. Reconfigure with:" >&2
+        echo "    ./build.sh clean && ./build.sh" >&2
+        echo >&2
+    fi
+}
+
+# An ELF binary carries no icon of its own, so the file manager is told which
+# one to use through GVFS metadata. Nemo, Nautilus and Caja honour this; it is
+# per-user and survives rebuilds of the same path.
+set_file_icon() {
+    command -v gio >/dev/null 2>&1 || return 0
+
+    local exe icon
+    exe=$(exe_path) || return 0
+    icon="$PWD/resources/icon.png"
+    [ -f "$icon" ] || return 0
+
+    gio set "$PWD/$exe" metadata::custom-icon "file://$icon" 2>/dev/null
+    return 0
 }
 
 compile() {
     warn_stale_pulse
     echo "Compiling main..."
     cmake --build "$BUILD_DIR" || exit 1
+    set_file_icon
     echo "Compiling done !"
     printf '\n\n\n'
 }

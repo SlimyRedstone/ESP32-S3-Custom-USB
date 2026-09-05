@@ -1,0 +1,9 @@
+/*
+ * Embeds the icon in the executable, so Explorer shows it as the file's own
+ * icon rather than the generic one. The window and tray icons are set at run
+ * time instead, from icon.png and icon.ico.
+ *
+ * The lowest-numbered icon resource is the one the shell picks, so this stays
+ * at 1.
+ */
+1 ICON "icon.ico"

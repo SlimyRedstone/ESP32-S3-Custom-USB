@@ -220,6 +220,12 @@ install -m 644 resources/RobotoMono-Medium.ttf "$DATA_DIR/"            || exit 1
 install -m 644 resources/icon.png             "$DATA_DIR/"             || exit 1
 install -m 644 resources/icon.png             "$ICON_DIR/iomeeter.png" || exit 1
 
+# The launcher gets its icon from the theme, but the installed binary is just a
+# file, so it is tagged the same way build.sh tags the one in build/.
+if command -v gio >/dev/null 2>&1; then
+    gio set "$BIN_DIR/IOMeeter" metadata::custom-icon "file://$DATA_DIR/icon.png" 2>/dev/null || true
+fi
+
 # Carry an existing configuration over on the first install only, so a later
 # reinstall never overwrites what the user has since changed.
 if [ ! -f "$DATA_DIR/config.json" ] && [ -f config.json ]; then

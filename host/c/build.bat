@@ -10,7 +10,7 @@ REM Work from this script's directory so it can be called from anywhere.
 cd /d "%~dp0"
 
 set "IN_CMD=%~1"
-set "EXE=build\main.exe"
+set "EXE=build\IOMeeter.exe"
 
 if "%IN_CMD%"==""        goto :default
 if /i "%IN_CMD%"=="run"   goto :run
@@ -59,7 +59,9 @@ if not exist "%EXE%" (
     exit /b 1
 )
 color 07
-"%EXE%"
+rem The executable is now a GUI application, and cmd does not wait for one
+rem of those. start /wait keeps "build.bat" behaving as it did before.
+start /wait "" "%EXE%"
 exit /b %errorlevel%
 
 

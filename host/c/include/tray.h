@@ -8,9 +8,10 @@
  * The window handle crosses the boundary as an opaque pointer, which is what
  * raylib's GetWindowHandle() returns.
  *
- * Windows is implemented. Elsewhere every call is a no-op and tray_available()
- * reports false, because a Linux tray needs a StatusNotifier/AppIndicator
- * connection rather than a handful of shell calls.
+ * Windows uses the shell notification area. Linux uses Ayatana AppIndicator,
+ * which speaks StatusNotifierItem over D-Bus, the protocol Cinnamon, KDE and
+ * the GNOME extensions all listen on. Without either, every call is a no-op
+ * and tray_available() reports false.
  */
 
 #ifndef TRAY_H
