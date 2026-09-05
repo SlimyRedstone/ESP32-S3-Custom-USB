@@ -44,7 +44,7 @@ static float clamp01(float v)
  * way to tell a build without PulseAudio from a session the program cannot
  * reach, which are fixed in completely different ways.
  */
-static char s_error[192] = "not initialised";
+static char s_error[256] = "not initialised";
 
 static void set_error(const char *text)
 {
@@ -452,6 +452,8 @@ bool mixer_set_mute(const char *process, bool mute)
 /* ========================================================================== */
 
 #include <pulse/pulseaudio.h>
+
+#include <stdlib.h>
 #include <unistd.h>
 
 /*
@@ -564,6 +566,33 @@ static void sink_input_cb(pa_context *c, const pa_sink_input_info *info,
     }
 }
 
+/*
+ * Both failure paths want the same detail: what libpulse itself said, plus
+ * the two conditions that usually explain it on a working desktop.
+ */
+static void set_connect_error(const char *what)
+{
+    const char *why = s_ctx ? pa_strerror(pa_context_errno(s_ctx)) : "no context";
+    char detail[256];
+
+    if (geteuid() == 0) {
+        snprintf(detail, sizeof(detail),
+                 "%s (%s); root cannot reach the desktop session's audio "
+                 "server, so use the udev rule instead of sudo", what, why);
+    } else if (getenv("XDG_RUNTIME_DIR") == NULL) {
+        snprintf(detail, sizeof(detail),
+                 "%s (%s); XDG_RUNTIME_DIR is unset, so the session socket "
+                 "cannot be located", what, why);
+    } else {
+        snprintf(detail, sizeof(detail),
+                 "%s (%s); check that \"pactl info\" works as this user",
+                 what, why);
+    }
+
+    set_error(detail);
+    fprintf(stderr, "mixer: %s\n", s_error);
+}
+
 bool mixer_init(void)
 {
     if (s_ready) {
@@ -589,7 +618,7 @@ bool mixer_init(void)
 
     if (pa_context_connect(s_ctx, NULL, PA_CONTEXT_NOFLAGS, NULL) < 0 ||
         pa_threaded_mainloop_start(s_loop) < 0) {
-        set_error("could not reach the PulseAudio socket");
+        set_connect_error("could not reach the PulseAudio socket");
         mixer_shutdown();
         return false;
     }
@@ -609,19 +638,7 @@ bool mixer_init(void)
     pa_threaded_mainloop_unlock(s_loop);
 
     if (!s_ready) {
-        /*
-         * The session socket belongs to the desktop user, so root reaches
-         * nothing even on a machine where audio is working normally. That
-         * is easy to hit here, because talking to the device without the
-         * udev rule needs sudo.
-         */
-        if (geteuid() == 0) {
-            set_error("running as root, which cannot reach the desktop "
-                      "session's audio server; use the udev rule instead of sudo");
-        } else {
-            set_error("no PulseAudio or PipeWire server reachable");
-        }
-        fprintf(stderr, "mixer: %s\n", s_error);
+        set_connect_error("no PulseAudio or PipeWire server reachable");
         mixer_shutdown();
     }
     return s_ready;
