@@ -1,5 +1,7 @@
 /*
- * Persistence for the fader strip, stored beside the executable as config.json:
+ * Persistence for the fader strip, read and written as config.json in the
+ * working directory. A desktop launcher sets that with Path=, so an installed
+ * copy keeps its configuration in the data directory rather than in $HOME:
  *
  *   {"debug":true,"sliders":[
  *     {"id":0,"value":2024,"name":"Main Audio",

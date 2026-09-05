@@ -89,6 +89,10 @@ typedef struct {
        the end of the poll rather than per packet. */
     bool slider_volume_dirty[APP_FADER_COUNT];
 
+    /* Latches once a fader's applications match no audio session, so the
+       warning is written when that starts rather than on every frame. */
+    bool slider_unmatched[APP_FADER_COUNT];
+
     bool live_send;
 
     /* Ring buffer; oldest entry is dropped once it fills. */

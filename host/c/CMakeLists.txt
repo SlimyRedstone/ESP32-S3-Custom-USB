@@ -15,6 +15,7 @@ add_executable(IOMeeter
     include/fader.c
     include/config.c
     include/filedialog.c
+    include/respath.c
     include/cli.c
     include/mixer.c
     include/audio_endpoint.c

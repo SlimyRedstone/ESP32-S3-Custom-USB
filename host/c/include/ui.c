@@ -8,6 +8,7 @@
 #include "fader.h"
 #include "filedialog.h"
 #include "mixer.h"
+#include "respath.h"
 #include "tray.h"
 
 #include "clay.h"
@@ -755,6 +756,17 @@ int ui_run(app_t *app)
                     (Clay_Dimensions){ UI_WINDOW_WIDTH, (float)window_h },
                     (Clay_ErrorHandler){ HandleClayErrors, NULL });
 
+#ifndef _WIN32
+    /*
+     * X11 identifies a window by WM_CLASS, and that is what the panel matches
+     * against StartupWMClass in IOMeeter.desktop to pair the window with its
+     * launcher and icon. GLFW builds WM_CLASS from RESOURCE_NAME when that is
+     * set and from the window title otherwise, so setting it here pins the
+     * name even in a session that exports its own.
+     */
+    setenv("RESOURCE_NAME", "IOMeeter", 1);
+#endif
+
     Clay_Raylib_Initialize(UI_WINDOW_WIDTH, window_h,
                            "IOMeeter",
                            FLAG_VSYNC_HINT | FLAG_WINDOW_RESIZABLE | FLAG_MSAA_4X_HINT);
@@ -790,24 +802,38 @@ int ui_run(app_t *app)
      * used here; the .ico is still the better source on Windows and tray_init()
      * overrides this with it below.
      *
-     * On Linux this is the only thing that sets an icon at all, since the tray
-     * layer is a stub there.
+     * On Linux this is the icon the panel shows for the window, and the only
+     * one set at all, since the tray layer is a stub there.
      */
-    Image icon = LoadImage("resources/icon.png");
-    if (icon.data) {
-        ImageFormat(&icon, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8);
-        SetWindowIcon(icon);
-        UnloadImage(icon);
+    char icon_path[512];
+
+    if (respath_find("icon.png", icon_path, sizeof(icon_path))) {
+        Image icon = LoadImage(icon_path);
+        if (icon.data) {
+            ImageFormat(&icon, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8);
+            SetWindowIcon(icon);
+            UnloadImage(icon);
+        }
     } else {
-        fprintf(stderr, "could not load resources/icon.png\n");
+        fprintf(stderr, "could not find icon.png\n");
     }
 
     /* On Windows this also owns the tray, and replaces the icon above with the
        multi-resolution .ico through the shell. */
-    tray_init(GetWindowHandle(), "resources/icon.ico", "IOMeeter");
+    char tray_icon[512];
+    if (!respath_find("icon.ico", tray_icon, sizeof(tray_icon))) {
+        tray_icon[0] = 0;
+    }
+    tray_init(GetWindowHandle(), tray_icon, "IOMeeter");
 
-    s_fonts[FONT_BODY] = LoadFontEx("resources/Roboto-Regular.ttf", 32, NULL, 0);
-    s_fonts[FONT_MONO] = LoadFontEx("resources/RobotoMono-Medium.ttf", 32, NULL, 0);
+    char font_path[512];
+
+    if (respath_find("Roboto-Regular.ttf", font_path, sizeof(font_path))) {
+        s_fonts[FONT_BODY] = LoadFontEx(font_path, 32, NULL, 0);
+    }
+    if (respath_find("RobotoMono-Medium.ttf", font_path, sizeof(font_path))) {
+        s_fonts[FONT_MONO] = LoadFontEx(font_path, 32, NULL, 0);
+    }
     for (int i = 0; i < FONT_COUNT; i++) {
         if (!s_fonts[i].glyphs) {
             s_fonts[i] = GetFontDefault();

@@ -22,7 +22,8 @@
  * Attach to the window and load @p icon_path as its title-bar and taskbar icon.
  *
  * @param window_handle Native handle, from raylib's GetWindowHandle().
- * @param icon_path     .ico file, relative to the working directory.
+ * @param icon_path     .ico file, already resolved to a full path by the
+ *                      caller; an empty string just leaves the default icon.
  * @param tooltip       Text shown when hovering the tray icon.
  * @return false if the platform has no tray support, or setup failed.
  */

@@ -107,7 +107,7 @@ bool tray_init(void *window_handle, const char *icon_path, const char *tooltip)
                 icon_path, (unsigned long)GetLastError());
     }
 
-        if (s_icon && s_app_window) {
+    if (s_icon && s_app_window) {
         SendMessageA(s_app_window, WM_SETICON, ICON_SMALL, (LPARAM)s_icon);
         SendMessageA(s_app_window, WM_SETICON, ICON_BIG, (LPARAM)s_icon);
     }

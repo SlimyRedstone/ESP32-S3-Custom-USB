@@ -436,10 +436,27 @@ void app_apply_volume(app_t *a, int id)
     }
 
     float gain = slider_to_gain(a->sliders[id].value, APP_FADER_MAX);
+    int matched = 0;
 
     for (int i = 0; i < a->sliders[id].app_count; i++) {
-        mixer_set_volume(a->sliders[id].apps[i].name, gain);
+        if (mixer_set_volume(a->sliders[id].apps[i].name, gain)) {
+            matched++;
+        }
     }
+
+    /*
+     * An application that is not playing anything has no session to set, which
+     * is normal. A fader whose whole list matches nothing is the usual reason
+     * it appears to do nothing at all, so that is worth saying once.
+     */
+    bool unmatched = (a->sliders[id].app_count > 0 && matched == 0);
+
+    if (unmatched && !a->slider_unmatched[id]) {
+        app_log(a, APP_LOG_ERROR,
+                "%s: no audio session matches its applications",
+                a->sliders[id].name);
+    }
+    a->slider_unmatched[id] = unmatched;
 }
 
 void app_reply_slider(app_t *a, int id)

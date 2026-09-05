@@ -20,6 +20,9 @@
 #     | sudo tee /etc/udev/rules.d/99-esp32s3-vendor.rules
 #   sudo udevadm control --reload-rules && sudo udevadm trigger
 #
+# This builds and runs in place. To put IOMeeter in the application menu and
+# give it a proper icon in the panel, run ./install-linux.sh afterwards.
+#
 set -uo pipefail
 
 cd "$(dirname "$0")" || exit 1
@@ -52,21 +55,43 @@ usage() {
     echo "  help     show this text"
 }
 
+# Development headers, checked by their pkg-config name.
+require_pkg() {
+    pkg-config --exists "$1" && return 0
+    echo "$1 development files not found. Install them with:" >&2
+    echo "    sudo apt install $2" >&2
+    exit 1
+}
+
 setup() {
     require cmake cmake
     require pkg-config pkg-config
 
-    if ! pkg-config --exists libusb-1.0; then
-        echo "libusb-1.0 development files not found. Install them with:" >&2
-        echo "    sudo apt install libusb-1.0-0-dev" >&2
-        exit 1
-    fi
+    require_pkg libusb-1.0 libusb-1.0-0-dev
+
+    # Without this CMake quietly builds a stub mixer: the interface runs, the
+    # faders move, and nothing changes volume. Mint does not ship it.
+    require_pkg libpulse libpulse-dev
 
     rm -rf "$BUILD_DIR"
     cmake -S . -B "$BUILD_DIR" || exit 1
 }
 
+# CMake only looks for libpulse when it configures. A build directory created
+# before libpulse-dev was installed therefore keeps the stub mixer, and the
+# faders go on doing nothing until it is reconfigured.
+warn_stale_pulse() {
+    [ -f "$BUILD_DIR/CMakeCache.txt" ] || return 0
+    grep -q '^PULSE_FOUND:INTERNAL=1$' "$BUILD_DIR/CMakeCache.txt" && return 0
+
+    echo "WARNING: this build directory was configured without PulseAudio," >&2
+    echo "so per-application volume is disabled. Reconfigure with:" >&2
+    echo "    ./build.sh clean && ./build.sh" >&2
+    echo >&2
+}
+
 compile() {
+    warn_stale_pulse
     echo "Compiling main..."
     cmake --build "$BUILD_DIR" || exit 1
     echo "Compiling done !"

@@ -1,0 +1,14 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=IOMeeter
+GenericName=Audio Mixer
+Comment=Hardware fader control for per-application volume
+Exec=@BIN@
+Path=@DATA@
+Icon=iomeeter
+Terminal=false
+Categories=AudioVideo;Audio;Mixer;
+Keywords=volume;mixer;fader;audio;usb;
+StartupNotify=true
+StartupWMClass=IOMeeter
